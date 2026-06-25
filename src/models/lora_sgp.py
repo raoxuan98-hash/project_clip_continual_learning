@@ -238,7 +238,7 @@ class SGPBaseLoRA(nn.Module):
     def set_basis_U(self, U: torch.Tensor) -> None:
         """Set the basis U buffer and mark it ready."""
         self.basis_U = U.to(device=self.A.device, dtype=self.A.dtype)
-        self.basis_ready = True_active)
+        self.basis_ready = True
 
 
 class SGPBaseDoRA(nn.Module):
