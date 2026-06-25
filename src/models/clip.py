@@ -115,7 +115,11 @@ def get_clip_model(args, train_mode="lora"):
                     weight_temp=getattr(args, 'weight_temp', 1.0),
                     use_soft_projection=use_soft_projection,
                     weight_kind=getattr(args, 'weight_kind', 'log1p'),
-                    weight_p=getattr(args, 'weight_p', 1.0))
+                    weight_p=getattr(args, 'weight_p', 1.0),
+                    projection_param_mode=getattr(args, 'projection_param_mode', 'full'),
+                    basis_rank=getattr(args, 'basis_rank', 4),
+                    basis_window=getattr(args, 'basis_window', 'tail'),
+                    null_init_mode=getattr(args, 'null_init_mode', 'none'))
             if getattr(args, 'tune_text_encoder', True):
                 if text_adapter_type == "lada_adaptformer":
                     maybe_wrap_lada_text_adapter()
