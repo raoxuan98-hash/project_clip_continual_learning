@@ -90,7 +90,11 @@ def get_clip_model(args, train_mode="lora"):
                     r=rank,
                     use_soft_projection=use_soft_projection,
                     nsp_eps=getattr(args, 'nsp_eps', 0.05),
-                    nsp_weight=getattr(args, 'nsp_weight', 0.02))
+                    nsp_weight=getattr(args, 'nsp_weight', 0.02),
+                    projection_param_mode=getattr(args, 'projection_param_mode', 'full'),
+                    basis_rank=getattr(args, 'basis_rank', 4),
+                    basis_window=getattr(args, 'basis_window', 'tail'),
+                    null_init_mode=getattr(args, 'null_init_mode', 'none'))
             if getattr(args, 'tune_text_encoder', True):
                 if text_adapter_type == "lada_adaptformer":
                     maybe_wrap_lada_text_adapter()
