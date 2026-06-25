@@ -339,7 +339,11 @@ class LoRACLIPVisionTransformer(nn.Module):
         nsp_eps: float = 0.05,
         nsp_weight: float = 0.02,
         lora_class: type = SGPBaseDoRA,
-        include_norm: bool = False):
+        include_norm: bool = False,
+        projection_param_mode: str = "full",
+        basis_rank: int = 4,
+        basis_window: str = "tail",
+        null_init_mode: str = "none"):
 
         super().__init__()
         assert r > 0, "LoRA rank r must be positive"
@@ -353,6 +357,11 @@ class LoRACLIPVisionTransformer(nn.Module):
 
         self.nsp_eps = nsp_eps
         self.nsp_weight = nsp_weight
+
+        self.projection_param_mode = projection_param_mode
+        self.basis_rank = basis_rank
+        self.basis_window = basis_window
+        self.null_init_mode = null_init_mode
 
         for n, p in clip_vision_model.named_parameters():
             if include_norm and ("norm" in n or "layernorm" in n.lower()):
@@ -379,7 +388,9 @@ class LoRACLIPVisionTransformer(nn.Module):
             for proj_name in ["k_proj", "v_proj", "q_proj", "out_proj"]:
                 linear = getattr(layer.self_attn, proj_name)
                 proj = make_placeholder(linear.in_features)
-                lora_mod = lora_class(linear, r, proj)
+                lora_mod = lora_class(linear, r, proj,
+                                      projection_param_mode=projection_param_mode,
+                                      basis_rank=basis_rank)
                 setattr(layer.self_attn, proj_name, lora_mod)
                 self.lora_modules[f"layer_{idx}_attn_{proj_name}"] = lora_mod
 
@@ -387,7 +398,9 @@ class LoRACLIPVisionTransformer(nn.Module):
             for mlp_name in ["fc1", "fc2"]:
                 linear = getattr(layer.mlp, mlp_name)
                 proj = make_placeholder(linear.in_features)
-                lora_mod = lora_class(linear, r, proj)
+                lora_mod = lora_class(linear, r, proj,
+                                      projection_param_mode=projection_param_mode,
+                                      basis_rank=basis_rank)
                 setattr(layer.mlp, mlp_name, lora_mod)
                 self.lora_modules[f"layer_{idx}_mlp_{mlp_name}"] = lora_mod
 
