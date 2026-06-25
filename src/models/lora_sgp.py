@@ -246,18 +246,33 @@ class SGPBaseDoRA(nn.Module):
         self,
         linear: nn.Linear,
         r: int,
-        proj: nn.Module):
+        proj: nn.Module,
+        projection_param_mode: str = "full",
+        basis_rank: int = 4):
         super().__init__()
         self.in_features = linear.in_features
         self.out_features = linear.out_features
         self.r = r
         self.P = proj
+        self.projection_param_mode = projection_param_mode
+        self.basis_rank = basis_rank
 
         # LoRA 参数
         self.A = nn.Parameter(torch.zeros(r, self.in_features))
         self.B = nn.Parameter(torch.zeros(self.out_features, r))
         nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
         nn.init.zeros_(self.B)
+
+        # Core-basis matrix C: [r, basis_rank]
+        if self.projection_param_mode == "core_basis":
+            self.C = nn.Parameter(torch.zeros(r, basis_rank))
+            nn.init.kaiming_uniform_(self.C, a=math.sqrt(5))
+        else:
+            self.register_parameter("C", None)
+
+        # Basis U buffer: [in_features, k]; k = 0 placeholder until set
+        self.register_buffer("basis_U", torch.zeros(self.in_features, 0))
+        self.basis_ready = False
 
         # DoRA 参数：方向 + 幅度
         with torch.no_grad():
@@ -274,11 +289,22 @@ class SGPBaseDoRA(nn.Module):
 
         self.register_buffer("lora_active", torch.tensor(True))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        P_scaled = self.P()
-        if self.lora_active:
+    def _compute_lora_delta(self) -> torch.Tensor:
+        if self.projection_param_mode == "full" or not self.basis_ready:
+            P_scaled = self.P()
             A_eff = self.A @ P_scaled
-            lora_delta = self.B @ A_eff  # (out, in)
+            return self.B @ A_eff
+        elif self.projection_param_mode == "fixed_basis":
+            k = min(self.basis_rank, self.B.shape[1])
+            return self.B[:, :k] @ self.basis_U.T
+        elif self.projection_param_mode == "core_basis":
+            return self.B @ self.C @ self.basis_U.T
+        else:
+            raise ValueError(f"Unknown projection_param_mode: {self.projection_param_mode}")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.lora_active:
+            lora_delta = self._compute_lora_delta()
             adapted_weight = (self.weight_directions + lora_delta) * self.magnitude
         else:
             adapted_weight = self.weight_directions * self.magnitude
@@ -286,12 +312,19 @@ class SGPBaseDoRA(nn.Module):
 
     def merge_lora_weights(self, lora_active: bool=True) -> None:
         with torch.no_grad():
-            P_scaled = self.P()
-            lora_delta = self.B @ self.A @ P_scaled
+            lora_delta = self._compute_lora_delta()
             self.weight_directions.data.add_(lora_delta)
             nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
             self.B.data.zero_()
+            if self.C is not None:
+                nn.init.kaiming_uniform_(self.C, a=math.sqrt(5))
             self.lora_active = torch.tensor(lora_active)
+
+    @torch.no_grad()
+    def set_basis_U(self, U: torch.Tensor) -> None:
+        """Set the basis U buffer and mark it ready."""
+        self.basis_U = U.to(device=self.A.device, dtype=self.A.dtype)
+        self.basis_ready = True
 
 class LoRACLIPVisionTransformer(nn.Module):
     def __init__(
