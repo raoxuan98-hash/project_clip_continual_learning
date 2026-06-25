@@ -542,7 +542,7 @@ class LoRACLIPVisionTransformer(nn.Module):
                 # Update DoRA weight_directions and magnitude
                 W_residual_norm = W_residual.norm(p=2, dim=1, keepdim=True) + 1e-8
                 module.weight_directions.data.copy_(W_residual / W_residual_norm)
-                module.magnitude.data.copy_(W_residual_norm.squeeze(1))
+                module.magnitude.data.copy_(W_residual_norm)
             else:
                 module.linear.weight.data.copy_(W_residual)
 
