@@ -460,6 +460,23 @@ def parse_args():
     parser.add_argument("--weight_p", type=float, default=1.0,
                         help="P parameter for weight function.")
 
+    # 投影参数化模式参数
+    parser.add_argument("--projection_param_mode", type=str, default="full",
+                        choices=["full", "fixed_basis", "core_basis"],
+                        help="Projection parameterization mode: full (BAP default), "
+                             "fixed_basis (B @ U^T using first k columns of B), "
+                             "core_basis (B @ C @ U^T with learnable C).")
+    parser.add_argument("--basis_rank", type=int, default=4,
+                        help="Rank k for fixed_basis / core_basis modes.")
+    parser.add_argument("--basis_window", type=str, default="tail",
+                        choices=["tail", "middle"],
+                        help="Eigenvector window for basis_U selection.")
+    parser.add_argument("--null_init_mode", type=str, default="none",
+                        choices=["none", "history_init_only", "history_init_runtime"],
+                        help="LoRA-Null-style initialization mode. "
+                             "history_init_only: init from history then P=I. "
+                             "history_init_runtime: init from history, keep P active.")
+
     # 参考数据集参数
     parser.add_argument("--reference_dataset", type=str, default="flickr8k",
                         help="Reference dataset for training.")
