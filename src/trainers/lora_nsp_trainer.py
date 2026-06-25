@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
 from tqdm import tqdm
 from typing import Dict, Optional
 import logging
@@ -54,6 +54,7 @@ class LoRANSPTrainer:
         # 检查是否启用了视觉/文本编码器 LoRA
         self.has_vision_lora = hasattr(self.model.vision_model, 'lora_modules')
         self.has_text_lora = hasattr(self.model.text_model, 'lora_modules')
+        self.has_text_adapter = self.has_text_lora or hasattr(self.model.text_model, 'adaptformer_modules')
 
         # 预训练模型（用于蒸馏）
         self.model_pretrain, _ = get_clip_model(args, train_mode="frozen")
@@ -291,7 +292,7 @@ class LoRANSPTrainer:
 
     def train(self, train_loader, class_names, reference_loader,
               eval_interval=0, eval_callback=None, aux_weight=0.0,
-              train_text_encoder=None, text_lr=None):
+              train_text_encoder=None, text_lr=None, iterations=None):
         """
         训练模型
 
@@ -305,11 +306,14 @@ class LoRANSPTrainer:
         templates = [lambda x: f"a photo of a {x}."]
         n_classes = len(class_names)
         max_zs_classes = getattr(self.args, 'max_zs_classes', 128)
-        train_text_encoder = self.has_text_lora if train_text_encoder is None else bool(train_text_encoder)
+        train_iterations = int(iterations if iterations is not None else self.args.iterations)
+        if train_iterations <= 0:
+            raise ValueError(f"Training iterations must be positive, got {train_iterations}")
+        train_text_encoder = self.has_text_adapter if train_text_encoder is None else bool(train_text_encoder)
         text_lr = self.args.lr if text_lr is None else float(text_lr)
-        text_grad_enabled = self.has_text_lora and train_text_encoder and text_lr > 0
+        text_grad_enabled = self.has_text_adapter and train_text_encoder and text_lr > 0
 
-        if self.has_text_lora and text_grad_enabled:
+        if self.has_text_adapter and text_grad_enabled:
             precomputed_classifier = None
         else:
             precomputed_classifier = self.zeroshot_classifier(class_names, templates)
@@ -320,15 +324,15 @@ class LoRANSPTrainer:
             vision_params = list(self.model.vision_model.get_params())
             if vision_params:
                 param_groups.append({'params': vision_params, 'lr': self.args.lr})
-        if self.has_text_lora and text_grad_enabled:
+        if self.has_text_adapter and text_grad_enabled:
             text_params = list(self.model.text_model.get_params())
             if text_params:
                 param_groups.append({'params': text_params, 'lr': text_lr})
 
         base_lr = self.args.lr
         logging.info(
-            "Task train schedule: vision_lora=%s, text_lora=%s, train_text=%s, text_lr=%.6g",
-            self.has_vision_lora, self.has_text_lora, text_grad_enabled, text_lr if text_grad_enabled else 0.0)
+            "Task train schedule: vision_lora=%s, text_adapter=%s, train_text=%s, text_lr=%.6g",
+            self.has_vision_lora, self.has_text_adapter, text_grad_enabled, text_lr if text_grad_enabled else 0.0)
         if aux_weight > 0:
             feature_dim = self.model.config.projection_dim
             self.aux_head = nn.Linear(feature_dim, n_classes, bias=False).to(self.device)
@@ -340,8 +344,18 @@ class LoRANSPTrainer:
         # A scalar eta_min keeps CosineAnnealingLR compatible across PyTorch
         # versions. Use 0 so low text-LR groups are not raised above their
         # initial LR by the previous base_lr / 3 floor.
-        scheduler = CosineAnnealingLR(optimizer, T_max=self.args.iterations,
-                                      eta_min=0.0)
+        scheduler_type = getattr(self.args, "scheduler", "cosine")
+        if scheduler_type == "onecycle":
+            scheduler = OneCycleLR(
+                optimizer,
+                max_lr=[group["lr"] for group in optimizer.param_groups],
+                total_steps=train_iterations,
+            )
+        elif scheduler_type == "cosine":
+            scheduler = CosineAnnealingLR(optimizer, T_max=train_iterations,
+                                          eta_min=0.0)
+        else:
+            raise ValueError(f"Unsupported scheduler: {scheduler_type}")
 
         logit_scale = self.model.logit_scale.detach()
 
@@ -356,7 +370,7 @@ class LoRANSPTrainer:
         ema_fd = torch.tensor(0.0)
         ema_cd = torch.tensor(0.0)
 
-        pbar = tqdm(range(self.args.iterations), desc="Training")
+        pbar = tqdm(range(train_iterations), desc="Training")
         for i in pbar:
             try:
                 images, labels = next(train_iter)
@@ -374,7 +388,7 @@ class LoRANSPTrainer:
             norm_feats = proj_feats / proj_feats.norm(dim=-1, keepdim=True)
 
             # --- ZS 分类器 ---
-            if self.has_text_lora and text_grad_enabled:
+            if self.has_text_adapter and text_grad_enabled:
                 if n_classes > max_zs_classes:
                     # 联合训练场景：随机采样子集控制显存
                     batch_classes = labels.unique().tolist()
@@ -407,7 +421,7 @@ class LoRANSPTrainer:
             loss = ce_loss
 
             preds = logits.argmax(dim=-1)
-            valid_mask = (remapped_labels != -100) if self.has_text_lora and text_grad_enabled and n_classes > max_zs_classes else None
+            valid_mask = (remapped_labels != -100) if self.has_text_adapter and text_grad_enabled and n_classes > max_zs_classes else None
             if valid_mask is not None and valid_mask.any():
                 train_acc = (preds[valid_mask] == remapped_labels[valid_mask]).float().mean().item() * 100
             elif valid_mask is not None and not valid_mask.any():
@@ -450,9 +464,9 @@ class LoRANSPTrainer:
                 l_fd = feature_distillation_loss(t_img_f, s_img_f)
                 l_fd_val = l_fd.item()
 
-                # text LoRA 启用时，即使当前任务冻结 text，也使用已经
-                # merge 的 adapted text encoder 作为 no-grad 语义锚点。
-                if self.has_text_lora:
+                # Text adapter enabled: use the adapted text encoder as the
+                # semantic anchor, with gradients only when it is trainable.
+                if self.has_text_adapter:
                     text_ctx_ref = torch.enable_grad() if text_grad_enabled else torch.no_grad()
                     with text_ctx_ref:
                         s_txt_f = self.encode_text(r_texts)
@@ -488,8 +502,8 @@ class LoRANSPTrainer:
                 'CD': f"{ema_cd.item():.4f}",
             })
 
-            if (i + 1) % 50 == 0 or (i + 1) == self.args.iterations:
-                logging.info(f"Iter[{i+1:03d}/{self.args.iterations}] | "
+            if (i + 1) % 50 == 0 or (i + 1) == train_iterations:
+                logging.info(f"Iter[{i+1:03d}/{train_iterations}] | "
                              f"Loss: {ema_loss.item():.4f} | Acc: {ema_acc.item():.2f}% | "
                              f"AuxCE: {ema_aux_ce.item():.4f} | AuxAcc: {ema_aux_acc.item():.2f}% | "
                              f"FD: {ema_fd.item():.4f} | CD: {ema_cd.item():.4f}")

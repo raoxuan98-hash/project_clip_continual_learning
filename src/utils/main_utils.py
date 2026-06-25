@@ -62,6 +62,31 @@ def get_zeroshot_classifier(model, processor, class_names, device):
     return torch.stack(zeroshot_weights, dim=1).to(device)
 
 
+def _normalize_for_ensemble(logits, mode):
+    if mode == "maxshift":
+        return logits - logits.max(dim=-1, keepdim=True).values
+    if mode == "zscore":
+        centered = logits - logits.mean(dim=-1, keepdim=True)
+        return centered / logits.std(dim=-1, keepdim=True).clamp_min(1e-6)
+    if mode == "prob":
+        return F.softmax(logits, dim=-1)
+    if mode == "raw":
+        return logits
+    raise ValueError(
+        f"Unsupported ensemble_normalize={mode!r}. "
+        "Expected one of: zscore, maxshift, prob, raw."
+    )
+
+
+def combine_ensemble_logits(zs_logits, id_logits, current_num_classes, alpha, mode="zscore"):
+    """Fuse global zero-shot logits with an ID-only classifier."""
+    zs_scores = _normalize_for_ensemble(zs_logits, mode)
+    id_scores = _normalize_for_ensemble(id_logits, mode)
+    ensemble_logits = zs_scores * (1.0 - alpha)
+    ensemble_logits[:, :current_num_classes] += alpha * id_scores
+    return ensemble_logits
+
+
 def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifier,
                      current_num_classes, eval_label_offset,
                      alpha_sensitivity=False, n_alpha_samples=21,
@@ -104,30 +129,34 @@ def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifie
 
     with torch.no_grad():
         # Zero-shot 预测（不乘 logit_scale，与 debug_classifier_router.py 一致）
+        ensemble_mode = getattr(args, "ensemble_normalize", "maxshift")
         zs_logits = features @ zeroshot_classifier
-        zs_logits_norm = zs_logits - zs_logits.max(dim=-1, keepdim=True).values
-        zs_preds = zs_logits_norm.argmax(dim=1)
+        zs_logits_norm = _normalize_for_ensemble(zs_logits, "maxshift")
+        zs_preds = zs_logits.argmax(dim=1)
         zs_acc = zs_preds.eq(labels).float().mean().item() * 100
 
         # 2. 纯 LR-RGDA 预测
         rgda_logits = lr_rgda_classifier.forward(features)
-        rgda_logits_norm = rgda_logits - rgda_logits.max(dim=-1, keepdim=True).values
-        rgda_preds = rgda_logits_norm.argmax(dim=1)
+        rgda_logits_norm = _normalize_for_ensemble(rgda_logits, "maxshift")
+        rgda_preds = rgda_logits.argmax(dim=1)
         rgda_acc = rgda_preds.eq(labels).float().mean().item() * 100
 
         # 3. Ensemble 预测（固定 α 或自适应）
         use_adaptive = getattr(args, 'adaptive_ensemble', False)
         if use_adaptive:
-            zs_probs = F.softmax(zs_logits_norm, dim=-1)
-            rgda_probs = F.softmax(rgda_logits_norm, dim=-1)
+            zs_scores = _normalize_for_ensemble(zs_logits, ensemble_mode)
+            rgda_scores = _normalize_for_ensemble(rgda_logits, ensemble_mode)
+            zs_probs = F.softmax(zs_scores, dim=-1)
+            rgda_probs = F.softmax(rgda_scores, dim=-1)
             zs_conf = zs_probs.max(dim=-1).values        # [B]
             rgda_conf = rgda_probs.max(dim=-1).values    # [B]
             alpha_sample = torch.sigmoid(rgda_conf - zs_conf).unsqueeze(-1)  # [B, 1]
-            ensemble_logits = (1 - alpha_sample) * zs_logits_norm
-            ensemble_logits[:, :current_num_classes] += alpha_sample * rgda_logits_norm
+            ensemble_logits = (1 - alpha_sample) * zs_scores
+            ensemble_logits[:, :current_num_classes] += alpha_sample * rgda_scores
         else:
-            ensemble_logits = zs_logits_norm * (1 - args.alpha)
-            ensemble_logits[:, :current_num_classes] += args.alpha * rgda_logits_norm
+            ensemble_logits = combine_ensemble_logits(
+                zs_logits, rgda_logits, current_num_classes, args.alpha, ensemble_mode
+            )
         ens_preds = ensemble_logits.argmax(dim=1)
         ens_acc = ens_preds.eq(labels).float().mean().item() * 100
 
@@ -148,8 +177,9 @@ def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifie
         if alpha_sensitivity and not use_adaptive:
             lr_sensitivity = []
             for alpha in torch.linspace(0, 1.0, n_alpha_samples):
-                ens_logits = zs_logits_norm * (1 - alpha)
-                ens_logits[:, :current_num_classes] += alpha * rgda_logits_norm
+                ens_logits = combine_ensemble_logits(
+                    zs_logits, rgda_logits, current_num_classes, alpha, ensemble_mode
+                )
                 ens_preds = ens_logits.argmax(dim=1)
                 ens_acc_alpha = ens_preds.eq(labels).float().mean().item() * 100
                 lr_sensitivity.append((round(alpha.item(), 3), round(ens_acc_alpha, 2)))
@@ -274,28 +304,32 @@ def batch_evaluate_datasets(
             labels_chunk = all_labels[start:end].to(device)
 
             # Zero-shot logits（不乘 logit_scale，与 debug_classifier_router.py 一致）
+            ensemble_mode = getattr(args, "ensemble_normalize", "maxshift")
             zs_logits = features_chunk @ zeroshot_classifier
-            zs_logits_norm = zs_logits - zs_logits.max(dim=-1, keepdim=True).values
-            zs_preds = zs_logits_norm.argmax(dim=1)
+            zs_logits_norm = _normalize_for_ensemble(zs_logits, "maxshift")
+            zs_preds = zs_logits.argmax(dim=1)
             zs_correct += int(zs_preds.eq(labels_chunk).sum().item())
 
             # LR-RGDA logits. Keep this chunked: full-test LR-RGDA logits can exceed GPU memory.
             rgda_logits = lr_rgda_classifier.forward(features_chunk)
-            rgda_logits_norm = rgda_logits - rgda_logits.max(dim=-1, keepdim=True).values
-            rgda_preds = rgda_logits_norm.argmax(dim=1)
+            rgda_logits_norm = _normalize_for_ensemble(rgda_logits, "maxshift")
+            rgda_preds = rgda_logits.argmax(dim=1)
             rgda_correct += int(rgda_preds.eq(labels_chunk).sum().item())
 
             if use_adaptive:
-                zs_probs = F.softmax(zs_logits_norm, dim=-1)
-                rgda_probs = F.softmax(rgda_logits_norm, dim=-1)
+                zs_scores = _normalize_for_ensemble(zs_logits, ensemble_mode)
+                rgda_scores = _normalize_for_ensemble(rgda_logits, ensemble_mode)
+                zs_probs = F.softmax(zs_scores, dim=-1)
+                rgda_probs = F.softmax(rgda_scores, dim=-1)
                 zs_conf = zs_probs.max(dim=-1).values
                 rgda_conf = rgda_probs.max(dim=-1).values
                 alpha_sample = torch.sigmoid(rgda_conf - zs_conf).unsqueeze(-1)
-                ensemble_logits = (1 - alpha_sample) * zs_logits_norm
-                ensemble_logits[:, :num_id_classes] += alpha_sample * rgda_logits_norm
+                ensemble_logits = (1 - alpha_sample) * zs_scores
+                ensemble_logits[:, :num_id_classes] += alpha_sample * rgda_scores
             else:
-                ensemble_logits = zs_logits_norm * (1 - alpha)
-                ensemble_logits[:, :num_id_classes] += alpha * rgda_logits_norm
+                ensemble_logits = combine_ensemble_logits(
+                    zs_logits, rgda_logits, num_id_classes, alpha, ensemble_mode
+                )
             ens_preds = ensemble_logits.argmax(dim=1)
             ens_correct += int(ens_preds.eq(labels_chunk).sum().item())
 
@@ -312,8 +346,9 @@ def batch_evaluate_datasets(
 
             if alpha_values is not None:
                 for idx, a in enumerate(alpha_values):
-                    ens_logits = zs_logits_norm * (1 - a)
-                    ens_logits[:, :num_id_classes] += a * rgda_logits_norm
+                    ens_logits = combine_ensemble_logits(
+                        zs_logits, rgda_logits, num_id_classes, a, ensemble_mode
+                    )
                     ens_preds = ens_logits.argmax(dim=1)
                     sensitivity_correct[idx] += int(ens_preds.eq(labels_chunk).sum().item())
 
@@ -385,20 +420,21 @@ def get_full_stats(matrix):
         }
     else:
         K = num_rows
-        # Transfer_k = mean of accuracy on old tasks (j<k) after learning task k
-        # = mean of row k, columns j<k → matrix[k][j]
+        # Transfer_k = mean accuracy on task k before task k is learned.
+        # In a full LADA matrix, row j is "after training task j" and column k
+        # is "evaluated on task k", so Transfer uses the upper triangle.
         trans = []
         for k in range(K):
             if k == 0:
                 trans.append(0.0)  # placeholder for display
             else:
-                trans.append(sum(matrix[k][j] for j in range(k)) / k)
+                trans.append(sum(matrix[j][k] for j in range(k)) / k)
         # Transfer = mean of Transfer_k for k=2..K (K-1 values)
         transfer_values = [trans[k] for k in range(1, K)]
         transfer_total_avg = sum(transfer_values) / len(transfer_values)
 
-        # Average_k = mean of column k across rows k..K-1 (only after task k is learned)
-        avgs = [sum(matrix[j][k] for j in range(k, K)) / (K - k) for k in range(K)]
+        # Average_k = mean of column k across all training steps.
+        avgs = [sum(matrix[j][k] for j in range(K)) / K for k in range(K)]
         average_total_avg = sum(avgs) / K
 
         # Last_k = accuracy on task k after all K tasks trained

@@ -39,13 +39,19 @@ def parse_list(raw):
 
 
 def result_paths(inputs):
-    paths = []
+    paths = {}
     for item in inputs:
         if item.is_dir():
-            paths.extend(sorted(item.glob("*_results.json")))
+            for path in sorted(item.rglob("*_results.json")):
+                paths[path.resolve()] = path
+            # Compatibility with older main_incremental.py outputs generated
+            # before per-classifier files used the *_results.json suffix.
+            for pattern in ("*_zs.json", "*_rgda.json", "*_ens.json"):
+                for path in sorted(item.rglob(pattern)):
+                    paths[path.resolve()] = path
         else:
-            paths.append(item)
-    return paths
+            paths[item.resolve()] = item
+    return list(paths.values())
 
 
 def nested_get(data, keys):

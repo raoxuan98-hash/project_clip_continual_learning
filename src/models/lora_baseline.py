@@ -245,7 +245,9 @@ def get_vanilla_lora_model(args):
     
     # 获取 LoRA 参数
     rank = getattr(args, 'lora_rank', 4)
-    alpha = getattr(args, 'lora_alpha', rank)  # 默认 alpha = rank
+    alpha = getattr(args, 'lora_alpha', None)
+    if alpha is None:
+        alpha = rank
     dropout = getattr(args, 'lora_dropout', 0.0)
     
     # 替换 vision_model 为 VanillaLoRA 版本

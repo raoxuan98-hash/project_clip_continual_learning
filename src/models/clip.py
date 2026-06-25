@@ -2,6 +2,7 @@
 from torch import nn
 from src.models.lora_sgp import LoRACLIPVisionTransformer, LoRACLIPTextTransformer
 from src.models.lora_baseline import VanillaLoRACLIPVisionTransformer, VanillaLoRACLIPTextTransformer
+from src.models.lada_text_adapter import LADAAdaptFormerCLIPTextTransformer
 from transformers import CLIPModel, CLIPProcessor
 import os
 
@@ -47,10 +48,23 @@ def get_clip_model(args, train_mode="lora"):
 
         rank = args.lora_rank
         lora_type = getattr(args, 'lora_type', 'lora_sgp')
+        text_adapter_type = getattr(args, 'text_adapter_type', 'matched')
+
+        def maybe_wrap_lada_text_adapter():
+            if not getattr(args, 'tune_text_encoder', True):
+                return
+            if text_adapter_type == "lada_adaptformer":
+                model.text_model = LADAAdaptFormerCLIPTextTransformer(
+                    model.text_model,
+                    adapter_dim=getattr(args, 'text_adapter_dim', 16),
+                    adapter_scale=getattr(args, 'text_adapter_scale', 0.1),
+                )
         
         if lora_type == 'lora_vanilla':
             # 普通 LoRA 基线（无 SGP/NSP 投影）
-            alpha = getattr(args, 'lora_alpha', rank)
+            alpha = getattr(args, 'lora_alpha', None)
+            if alpha is None:
+                alpha = rank
             dropout = getattr(args, 'lora_dropout', 0.0)
             if getattr(args, 'tune_vision_encoder', True):
                 model.vision_model = VanillaLoRACLIPVisionTransformer(
@@ -59,11 +73,14 @@ def get_clip_model(args, train_mode="lora"):
                     lora_alpha=alpha,
                     lora_dropout=dropout)
             if getattr(args, 'tune_text_encoder', True):
-                model.text_model = VanillaLoRACLIPTextTransformer(
-                    model.text_model,
-                    r=getattr(args, 'text_lora_rank', 4),
-                    lora_alpha=alpha,
-                    lora_dropout=dropout)
+                if text_adapter_type == "lada_adaptformer":
+                    maybe_wrap_lada_text_adapter()
+                else:
+                    model.text_model = VanillaLoRACLIPTextTransformer(
+                        model.text_model,
+                        r=getattr(args, 'text_lora_rank', 4),
+                        lora_alpha=alpha,
+                        lora_dropout=dropout)
         
         elif lora_type == 'lora_nsp':
             use_soft_projection = False
@@ -75,12 +92,15 @@ def get_clip_model(args, train_mode="lora"):
                     nsp_eps=getattr(args, 'nsp_eps', 0.05),
                     nsp_weight=getattr(args, 'nsp_weight', 0.02))
             if getattr(args, 'tune_text_encoder', True):
-                model.text_model = LoRACLIPTextTransformer(
-                    model.text_model,
-                    r=getattr(args, 'text_lora_rank', 4),
-                    use_soft_projection=use_soft_projection,
-                    nsp_eps=getattr(args, 'nsp_eps', 0.05),
-                    nsp_weight=getattr(args, 'nsp_weight', 0.02))
+                if text_adapter_type == "lada_adaptformer":
+                    maybe_wrap_lada_text_adapter()
+                else:
+                    model.text_model = LoRACLIPTextTransformer(
+                        model.text_model,
+                        r=getattr(args, 'text_lora_rank', 4),
+                        use_soft_projection=use_soft_projection,
+                        nsp_eps=getattr(args, 'nsp_eps', 0.05),
+                        nsp_weight=getattr(args, 'nsp_weight', 0.02))
 
         elif lora_type == "lora_sgp":
             use_soft_projection = True
@@ -93,13 +113,16 @@ def get_clip_model(args, train_mode="lora"):
                     weight_kind=getattr(args, 'weight_kind', 'log1p'),
                     weight_p=getattr(args, 'weight_p', 1.0))
             if getattr(args, 'tune_text_encoder', True):
-                model.text_model = LoRACLIPTextTransformer(
-                    model.text_model,
-                    r=getattr(args, 'text_lora_rank', 4),
-                    weight_temp=getattr(args, 'weight_temp', 1.0),
-                    use_soft_projection=use_soft_projection,
-                    weight_kind=getattr(args, 'weight_kind', 'log1p'),
-                    weight_p=getattr(args, 'weight_p', 1.0))
+                if text_adapter_type == "lada_adaptformer":
+                    maybe_wrap_lada_text_adapter()
+                else:
+                    model.text_model = LoRACLIPTextTransformer(
+                        model.text_model,
+                        r=getattr(args, 'text_lora_rank', 4),
+                        weight_temp=getattr(args, 'weight_temp', 1.0),
+                        use_soft_projection=use_soft_projection,
+                        weight_kind=getattr(args, 'weight_kind', 'log1p'),
+                        weight_p=getattr(args, 'weight_p', 1.0))
         else:
             raise ValueError(f"Unsupported lora_type: {lora_type}")
 
