@@ -1,0 +1,179 @@
+{
+  "mode": "Incremental Learning",
+  "timestamp": "2026-06-26 00:59:11",
+  "dataset_order": [
+    "aircraft",
+    "caltech101",
+    "dtd"
+  ],
+  "arguments": {
+    "id_datasets": [
+      "aircraft",
+      "caltech101",
+      "dtd",
+      "eurosat",
+      "flowers",
+      "food101",
+      "mnist",
+      "oxford_pets",
+      "stanford_cars",
+      "sun397"
+    ],
+    "root": "/data1/open_datasets/X-TAIL",
+    "num_shots": 16,
+    "full_shot": false,
+    "batch_size": 64,
+    "eval_max_samples": 0,
+    "dataset_sequence": [
+      [
+        "aircraft"
+      ],
+      [
+        "caltech101"
+      ],
+      [
+        "dtd"
+      ]
+    ],
+    "seed": 42,
+    "gpu": 0,
+    "device": "cuda:0",
+    "iterations": 200,
+    "train_budget_mode": "uniform",
+    "dataset_epoch_overrides": null,
+    "use_lada_recipe_defaults": false,
+    "lr": 0.0001,
+    "weight_decay": 3e-05,
+    "scheduler": "cosine",
+    "lora_rank": 4,
+    "lora_alpha": null,
+    "lora_dropout": 0.0,
+    "lora_type": "lora_nsp",
+    "init_mode": "lora_nsp",
+    "nsp_eps": 0.05,
+    "nsp_weight": 0.02,
+    "weight_temp": 1.0,
+    "weight_kind": "log1p",
+    "weight_p": 1.0,
+    "projection_param_mode": "full",
+    "basis_rank": 4,
+    "basis_window": "tail",
+    "null_init_mode": "none",
+    "reference_dataset": "flickr8k",
+    "reference_batch_size": 32,
+    "num_workers": 6,
+    "fd_weight": 0.0,
+    "cd_weight": 0.0,
+    "aux_weight": 0.0,
+    "sce_a": 0.5,
+    "sce_b": 0.5,
+    "alpha": 0.05,
+    "temperature": 1.0,
+    "adaptive_ensemble": false,
+    "ensemble_normalize": "maxshift",
+    "classifier_feature_transform": "test",
+    "rgda_rank": 32,
+    "rgda_alpha1": 0.2,
+    "rgda_alpha2": 2.0,
+    "rgda_alpha3": 0.5,
+    "rgda_train_iter": 0,
+    "rgda_train_lr": 0.01,
+    "rgda_fit_source": "gmm_sample",
+    "tune_text_encoder": false,
+    "text_adapter_type": "matched",
+    "text_adapter_dim": 16,
+    "text_adapter_scale": 0.1,
+    "text_lora_rank": 4,
+    "max_zs_classes": 128,
+    "tune_vision_encoder": true,
+    "text_tuning_schedule": "never",
+    "text_schedule_switch_task": 1,
+    "text_lr_scale_after_task": 0.2,
+    "num_centers": 1,
+    "artifact_num_centers": "",
+    "text_classifier_mode": "current",
+    "enable_lada": false,
+    "lada_k": 16,
+    "lada_beta": 1.0,
+    "lada_alpha": 0.05,
+    "lada_train_iter": 0,
+    "lada_train_lr": 0.01,
+    "use_gaussian_features": false,
+    "gmm_k": 4,
+    "gmm_sample_mode": "mean",
+    "gmm_fit_space": "raw",
+    "gaussian_samples_per_class": 16,
+    "output_dir": "experiments/null_basis_ablation",
+    "experiment_name": "1.1",
+    "async_eval_dir": null,
+    "save_step_artifacts": false,
+    "skip_inline_eval": false
+  },
+  "args": {
+    "task_sequence": [
+      "aircraft",
+      "caltech101",
+      "dtd"
+    ],
+    "seed": 42,
+    "method": "lora_nsp",
+    "eval_max_samples": 0,
+    "num_shots": 16
+  },
+  "accuracy_matrix": [
+    [
+      0.34233421087265015,
+      0.8081135749816895,
+      0.4338061511516571
+    ],
+    [
+      0.34023401141166687,
+      0.8705882430076599,
+      0.42553192377090454
+    ],
+    [
+      0.34113410115242004,
+      0.8705882430076599,
+      0.567966878414154
+    ]
+  ],
+  "metrics": {
+    "zero_shot": {
+      "transfer": 61.57735362648964,
+      "average": 52.83404423130883,
+      "last": 54.99176780382792
+    },
+    "lr_rgda": {
+      "transfer": 0.0,
+      "average": 43.05202199353113,
+      "last": 68.30706099669138
+    },
+    "ours_ensemble": {
+      "transfer": 61.889130622148514,
+      "average": 55.55885930856069,
+      "last": 59.3229740858078
+    }
+  },
+  "summary_metrics": {
+    "zero_shot": {
+      "transfer": 61.57735362648964,
+      "average": 52.83404423130883,
+      "last": 54.99176780382792
+    },
+    "lr_rgda": {
+      "transfer": 0.0,
+      "average": 43.05202199353113,
+      "last": 68.30706099669138
+    },
+    "ours_ensemble": {
+      "transfer": 61.889130622148514,
+      "average": 55.55885930856069,
+      "last": 59.3229740858078
+    }
+  },
+  "per_file_results": {
+    "zero_shot": "1.1_zs_results.json",
+    "lr_rgda": "1.1_rgda_results.json",
+    "ensemble": "1.1_ens_results.json"
+  }
+}
