@@ -208,10 +208,11 @@ class SGPBaseLoRA(nn.Module):
             A_eff = self.A @ P_scaled
             return self.B @ A_eff
         elif self.projection_param_mode == "fixed_basis":
-            k = min(self.basis_rank, self.B.shape[1])
-            return self.B[:, :k] @ self.basis_U.T
+            k = min(self.basis_rank, self.B.shape[1], self.basis_U.shape[1])
+            return self.B[:, :k] @ self.basis_U[:, :k].T
         elif self.projection_param_mode == "core_basis":
-            return self.B @ self.C @ self.basis_U.T
+            k = min(self.basis_rank, self.basis_U.shape[1])
+            return self.B @ self.C[:, :k] @ self.basis_U[:, :k].T
         else:
             raise ValueError(f"Unknown projection_param_mode: {self.projection_param_mode}")
 
