@@ -424,11 +424,133 @@ class LoRACLIPVisionTransformer(nn.Module):
                 weight_p=self.weight_p,
                 nsp_eps=self.nsp_eps,
                 nsp_weight=self.nsp_weight)
-            
+
             # 确保投影矩阵与 LoRA 模块在同一设备
             module = self.lora_modules[name]
             P = P.to(device=module.A.device, dtype=module.A.dtype)
             module.P = FixedProjection(P)
+
+        # If using fixed_basis or core_basis, also update basis_U from covariances
+        if self.projection_param_mode in ("fixed_basis", "core_basis"):
+            self.set_basis_from_covariance(covariances, self.basis_rank, window=self.basis_window)
+
+    @torch.no_grad()
+    def set_basis_from_covariance(self, covariances: Dict[str, torch.Tensor],
+                                   k: int, window: str = "tail") -> None:
+        """Extract basis U (eigenvectors) from covariances and set them on modules."""
+        for name, cov in covariances.items():
+            if name not in self.lora_modules:
+                continue
+
+            module = self.lora_modules[name]
+
+            # Eigendecomposition of covariance (same preprocessing as build_projection)
+            cov_double = cov.to(torch.float64)
+            cov_double = (cov_double + cov_double.t()) / 2.0
+            safe_eps = 1e-4
+            eye = torch.eye(cov_double.size(0), device=cov_double.device, dtype=torch.float64)
+            cov_double = cov_double + safe_eps * eye
+
+            eigvals_double, eigvecs_double = torch.linalg.eigh(cov_double)
+            eigvecs = eigvecs_double.to(dtype=module.A.dtype, device=module.A.device)
+
+            d = cov.size(0)
+            actual_k = min(k, d)
+            if window == "tail":
+                U_basis = eigvecs[:, :actual_k]
+            elif window == "middle":
+                s = max(1, min(int(d * 0.33), d - actual_k - 1))
+                U_basis = eigvecs[:, s:s + actual_k]
+            else:
+                raise ValueError(f"Unknown window '{window}'. Choose from ['tail', 'middle']")
+
+            module.set_basis_U(U_basis)
+
+    @torch.no_grad()
+    def initialize_history_null(self, covariances: Dict[str, torch.Tensor],
+                                 window: str = "tail") -> None:
+        """LoRA-Null-style initialization: project W onto nullspace basis, init A/B from residual.
+
+        For each module:
+          1. Get effective weight W (linear.weight for LoRA, weight_directions*magnitude for DoRA)
+          2. Eigendecompose covariance -> take tail eigenvectors U_tail
+          3. BA_init = W @ U_tail @ U_tail.T
+          4. SVD of BA_init -> A_init, B_init
+          5. W_residual = W - BA_init
+          6. Update weight and set A, B
+        """
+        self._ensure_merged_before_rebuild()
+
+        for name, cov in covariances.items():
+            if name not in self.lora_modules:
+                continue
+
+            module = self.lora_modules[name]
+
+            # Get effective weight W
+            if hasattr(module, 'weight_directions') and hasattr(module, 'magnitude'):
+                # DoRA: weight = direction * magnitude
+                W = module.weight_directions.data * module.magnitude.data
+                is_dora = True
+            else:
+                W = module.linear.weight.data
+                is_dora = False
+
+            # Eigendecomposition of covariance
+            cov_double = cov.to(torch.float64)
+            cov_double = (cov_double + cov_double.t()) / 2.0
+            safe_eps = 1e-4
+            eye = torch.eye(cov_double.size(0), device=cov_double.device, dtype=torch.float64)
+            cov_double = cov_double + safe_eps * eye
+            eigvals_double, eigvecs_double = torch.linalg.eigh(cov_double)
+            eigvecs = eigvecs_double.to(dtype=W.dtype, device=W.device)
+
+            r = module.r
+            d = cov.size(0)
+            if window == "tail":
+                U_tail = eigvecs[:, :r]
+            elif window == "middle":
+                s = max(1, min(int(d * 0.33), d - r - 1))
+                U_tail = eigvecs[:, s:s + r]
+            else:
+                raise ValueError(f"Unknown window '{window}'. Choose from ['tail', 'middle']")
+
+            # BA_init = W @ U_tail @ U_tail.T
+            BA_init = W @ U_tail @ U_tail.T
+
+            # SVD of BA_init -> A_init, B_init
+            U_svd, D_svd, Vh_svd = torch.linalg.svd(BA_init, full_matrices=False)
+            r_eff = min(r, U_svd.size(1))
+
+            A_init = torch.diag(D_svd[:r_eff] ** 0.5) @ Vh_svd[:r_eff, :]
+            B_init = U_svd[:, :r_eff] @ torch.diag(D_svd[:r_eff] ** 0.5)
+            W_residual = W - BA_init
+
+            if r_eff < r:
+                pad_A = torch.zeros(r - r_eff, A_init.size(1), device=A_init.device, dtype=A_init.dtype)
+                pad_B = torch.zeros(B_init.size(0), r - r_eff, device=B_init.device, dtype=B_init.dtype)
+                A_init = torch.cat([A_init, pad_A], dim=0)
+                B_init = torch.cat([B_init, pad_B], dim=1)
+
+            # Write back
+            module.A.data.copy_(A_init)
+            module.B.data.copy_(B_init)
+
+            if is_dora:
+                # Update DoRA weight_directions and magnitude
+                W_residual_norm = W_residual.norm(p=2, dim=1, keepdim=True) + 1e-8
+                module.weight_directions.data.copy_(W_residual / W_residual_norm)
+                module.magnitude.data.copy_(W_residual_norm.squeeze(1))
+            else:
+                module.linear.weight.data.copy_(W_residual)
+
+            # Handle null_init_mode: "history_init_only" sets P=I (no runtime projection)
+            if self.null_init_mode == "history_init_only":
+                d_in = module.in_features
+                device = module.A.device
+                dtype = module.A.dtype
+                module.P = FixedProjection(torch.eye(d_in, device=device, dtype=dtype))
+            # For "history_init_runtime", leave P as-is (runtime NSP active)rojection(P)
 
     @torch.no_grad()
     def initialize_adapters_from_covariance(
