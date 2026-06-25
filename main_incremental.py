@@ -788,6 +788,22 @@ def main(args):
             print(f"\n=== Merging LoRA Weights (init_mode={args.init_mode}) ===")
             trainer.finalize_task_for_incremental()
 
+        # --- 2d-bis. New basis/null-init modes (after cov extraction) ---
+        if trainer.has_vision_lora and args.projection_param_mode in ("fixed_basis", "core_basis"):
+            # In lora_nsp path, update_projection_matrices already sets basis_U.
+            # For other init_modes without NSP update, set basis_U explicitly.
+            if args.init_mode != "lora_nsp":
+                trainer.model.vision_model.set_basis_from_covariance(
+                    covariances if 'covariances' in dir() else trainer.covariance_history,
+                    args.basis_rank,
+                    window=args.basis_window)
+
+        if trainer.has_vision_lora and args.null_init_mode != "none":
+            logging.info(f"\n=== LoRA-Null Init (mode={args.null_init_mode}) ===")
+            cov_source = covariances if 'covariances' in dir() else trainer.covariance_history
+            trainer.model.vision_model.initialize_history_null(
+                cov_source, window=args.basis_window)
+
         if args.text_classifier_mode == "lada_hybrid":
             task_text_features = _encode_text_classifier_columns(
                 model, processor, task_class_names, args.device)
