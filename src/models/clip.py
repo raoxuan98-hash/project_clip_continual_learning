@@ -21,7 +21,6 @@ def get_clip_model(args, train_mode="lora"):
     local_files_only = _env_flag("CLIP_LOCAL_FILES_ONLY", False)
     model = CLIPModel.from_pretrained(
         model_name,
-        use_safetensors=use_safetensors,
         local_files_only=local_files_only,
     )
     processor = CLIPProcessor.from_pretrained(
