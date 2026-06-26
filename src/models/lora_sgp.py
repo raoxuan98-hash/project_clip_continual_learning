@@ -690,8 +690,8 @@ def build_projection(
     
     # 6. 计算完成后，转回模型原本的精度（float16 或 float32）
     # [修改点] 将结果从双精度转回原精度，并移回 GPU (cuda)
-    eigvals = eigvals_double.to(dtype=cov.dtype, device='cuda')
-    eigvecs = eigvecs_double.to(dtype=cov.dtype, device='cuda')
+    eigvals = eigvals_double.to(dtype=cov.dtype, device=cov.device)
+    eigvecs = eigvecs_double.to(dtype=cov.dtype, device=cov.device)
     # --- [修改结束] ---
     eigvals = torch.abs(eigvals)
     d = cov.size(0)
@@ -719,7 +719,7 @@ def build_projection(
         P = (1 - nsp_weight) * P + nsp_weight * I
     
     # [修改点] 确保返回的 P 矩阵一定在显卡上，与模型权重设备对齐
-    P = P.to(device='cuda')
+    P = P.to(device=cov.device)
     return P
 
 
