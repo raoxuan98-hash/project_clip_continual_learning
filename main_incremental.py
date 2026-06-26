@@ -460,6 +460,23 @@ def parse_args():
     parser.add_argument("--weight_p", type=float, default=1.0,
                         help="P parameter for weight function.")
 
+    # 投影参数化模式参数
+    parser.add_argument("--projection_param_mode", type=str, default="full",
+                        choices=["full", "fixed_basis", "core_basis"],
+                        help="Projection parameterization mode: full (BAP default), "
+                             "fixed_basis (B @ U^T using first k columns of B), "
+                             "core_basis (B @ C @ U^T with learnable C).")
+    parser.add_argument("--basis_rank", type=int, default=4,
+                        help="Rank k for fixed_basis / core_basis modes.")
+    parser.add_argument("--basis_window", type=str, default="tail",
+                        choices=["tail", "middle"],
+                        help="Eigenvector window for basis_U selection.")
+    parser.add_argument("--null_init_mode", type=str, default="none",
+                        choices=["none", "history_init_only", "history_init_runtime"],
+                        help="LoRA-Null-style initialization mode. "
+                             "history_init_only: init from history then P=I. "
+                             "history_init_runtime: init from history, keep P active.")
+
     # 参考数据集参数
     parser.add_argument("--reference_dataset", type=str, default="flickr8k",
                         help="Reference dataset for training.")
@@ -747,29 +764,46 @@ def main(args):
                               iterations=task_train_iterations)
 
         # --- 2d. 任务后处理：合入 + 协方差累积 ---
+        extracted_covariances = None
         if args.init_mode == "lora_nsp":
             print("\n=== Applying Null-Space Projection (NSP) ===")
             # 图像编码器 NSP
             text_covariances = None
             if trainer.has_vision_lora:
-                covariances = trainer.extract_layer_covariances(cov_loader)
+                extracted_covariances = trainer.extract_layer_covariances(cov_loader)
             # 文本编码器 NSP（仅当本轮实际训练了文本编码器）
             if trainer.has_text_lora and train_text_this_task:
                 text_covariances = trainer.extract_text_covariances(task_class_names)
             trainer.finalize_task_for_incremental()
             if trainer.has_vision_lora:
-                trainer.update_covariance_history(covariances)
+                trainer.update_covariance_history(extracted_covariances)
             if trainer.has_text_lora and train_text_this_task:
                 trainer.update_text_covariance_history(text_covariances)
         elif "proj_sigma" in args.init_mode:
             print("\n=== Proj-Σ: Extracting covariances + merging ===")
             if trainer.has_vision_lora:
-                covariances = trainer.extract_layer_covariances(cov_loader)
-                trainer.update_covariance_history(covariances, update_projection=False)
+                extracted_covariances = trainer.extract_layer_covariances(cov_loader)
+                trainer.update_covariance_history(extracted_covariances, update_projection=False)
             trainer.finalize_task_for_incremental()
         else:
             print(f"\n=== Merging LoRA Weights (init_mode={args.init_mode}) ===")
             trainer.finalize_task_for_incremental()
+
+        # --- 2d-bis. New basis/null-init modes (after cov extraction + merge) ---
+        if trainer.has_vision_lora and args.projection_param_mode in ("fixed_basis", "core_basis"):
+            cov_source = extracted_covariances if extracted_covariances else trainer.covariance_history
+            if cov_source:
+                if args.init_mode != "lora_nsp":
+                    # lora_nsp path already set basis_U via update_projection_matrices
+                    trainer.model.vision_model.set_basis_from_covariance(
+                        cov_source, args.basis_rank, window=args.basis_window)
+
+        if trainer.has_vision_lora and args.null_init_mode != "none":
+            cov_source = extracted_covariances if extracted_covariances else trainer.covariance_history
+            if cov_source:
+                logging.info(f"\n=== LoRA-Null Init (mode={args.null_init_mode}) ===")
+                trainer.model.vision_model.initialize_history_null(
+                    cov_source, window=args.basis_window)
 
         if args.text_classifier_mode == "lada_hybrid":
             task_text_features = _encode_text_classifier_columns(
