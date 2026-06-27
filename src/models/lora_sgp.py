@@ -204,7 +204,7 @@ class SGPBaseLoRA(nn.Module):
 
     def _compute_lora_delta(self) -> torch.Tensor:
         if self.projection_param_mode == "full" or not self.basis_ready:
-            P_scaled = self.P()
+            P_scaled = self.P().to(device=self.A.device)
             A_eff = self.A @ P_scaled
             return self.B @ A_eff
         elif self.projection_param_mode == "fixed_basis":
@@ -292,7 +292,7 @@ class SGPBaseDoRA(nn.Module):
 
     def _compute_lora_delta(self) -> torch.Tensor:
         if self.projection_param_mode == "full" or not self.basis_ready:
-            P_scaled = self.P()
+            P_scaled = self.P().to(device=self.A.device)
             A_eff = self.A @ P_scaled
             return self.B @ A_eff
         elif self.projection_param_mode == "fixed_basis":
