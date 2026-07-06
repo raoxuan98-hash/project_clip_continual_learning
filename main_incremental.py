@@ -51,7 +51,6 @@ from src.lada import LADAClassifier
 from src.utils.reference_loader import load_reference_dataset
 from src.utils.infinite_sampler import InfiniteSampler
 from src.utils.main_utils import (
-    get_full_stats,
     fix_random_seed,
     get_zeroshot_classifier,
     evaluate_dataset,
@@ -507,10 +506,13 @@ def parse_args():
 
     # 优化器参数
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
+    parser.add_argument("--eta_min", type=float, default=0.0,
+                        help="Minimum LR for cosine annealing (0.0 = decay to zero). "
+                             "Applied to cosine and cosine_with_warmup schedulers.")
     parser.add_argument("--weight_decay", type=float, default=3e-5,
                         help="Weight decay for optimizer.")
     parser.add_argument("--scheduler", type=str, default="cosine",
-                        choices=["cosine", "onecycle", "linear", "constant", "cosine_with_warmup"],
+                        choices=["cosine", "onecycle", "cosine_with_warmup", "linear", "constant"],
                         help="Per-step learning-rate scheduler.")
     parser.add_argument("--optimizer", type=str, default="adamw",
                         choices=["adamw", "adam", "sgd", "adagrad", "rmsprop"],
@@ -531,11 +533,6 @@ def parse_args():
     parser.add_argument("--use_dora", type=lambda x: x.lower() in ('true', '1', 'yes'),
                         default=True,
                         help="Use DoRA (SGPBaseDoRA) for lora_nsp/lora_sgp; set false for plain LoRA (SGPBaseLoRA).")
-    parser.add_argument("--lora_target_modules", type=lambda x: [m.strip() for m in x.split(',')],
-                        default="q_proj,k_proj,v_proj,out_proj,fc1,fc2",
-                        help="Comma-separated list of module names to apply LoRA to. Vision/text transformer supports q_proj,k_proj,v_proj,out_proj,fc1,fc2.")
-    parser.add_argument("--fused_qkv", action="store_true", default=False,
-                        help="将同层的 q_proj/k_proj/v_proj 融合为单个 qkv_proj 并挂载 LoRA（仅当三者同时在 target_modules 时生效）。")
     parser.add_argument("--init_mode", type=str, default="lora_nsp",
                         choices=["lora_nsp", "lora_vanilla",
                                  "proj_sigma_tail", "proj_sigma_middle",
@@ -562,8 +559,8 @@ def parse_args():
                         help="Epsilon parameter for NSP.")
     parser.add_argument("--nsp_weight", type=float, default=0.02,
                         help="Weight parameter for NSP.")
-    parser.add_argument("--use_soft_projection", type=lambda x: x.lower() in ("true", "1", "yes"), default=False,
-                        help="Use soft projection (eigenvalue weighting) instead of hard truncation.")
+    parser.add_argument("--use_soft_projection", action="store_true", default=False,
+                        help="Use soft projection (eigenvalue-weighted) instead of hard subspace projection.")
     parser.add_argument("--weight_temp", type=float, default=1.0,
                         help="Temperature parameter for weight.")
     parser.add_argument("--weight_kind", type=str, default="log1p")
@@ -589,7 +586,7 @@ def parse_args():
                         choices=["kl_forward", "kl_reverse", "js", "mse", "cosine", "l1"],
                         help="Divergence form for cross-modal distillation.")
     parser.add_argument("--cd_temperature", type=float, default=2.0,
-                        help="Temperature for cross-modal distillation logits.")
+                        help="Temperature for cross-modal distillation soft labels.")
     parser.add_argument("--aux_weight", type=float, default=1.0,
                         help="Weight for auxiliary linear classifier loss (0=disabled). "
                              "Adds a linear head on features during training to improve "
@@ -602,9 +599,6 @@ def parse_args():
     # 分类器参数
     parser.add_argument("--alpha", type=float, default=0.05,
                         help="Weight for LR-RGDA classifier in ensemble (paper: 0.05).")
-    parser.add_argument("--alpha_sensitivity", action="store_true", default=False,
-                        help="Run inline alpha sweep (0,0.05,...,1.0) during evaluation and "
-                             "report Transfer/Average/Last for each alpha.")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Temperature for zero-shot classifier.")
     parser.add_argument("--adaptive_ensemble", action='store_true', default=False,
@@ -843,11 +837,6 @@ def main(args):
     metrics_lada = ContinualLearningMetrics(task_names) if args.enable_lada else None
     metrics_lada_zs = ContinualLearningMetrics(task_names) if args.enable_lada else None
 
-    # Collectors for inline alpha sweep: alpha_idx -> step -> task_name -> acc
-    alpha_sweep_lr = {} if args.alpha_sensitivity else None
-    alpha_sweep_lada = {} if (args.alpha_sensitivity and args.enable_lada) else None
-    alpha_values = None
-
     for i, task_datasets in enumerate(args.dataset_sequence):
         print(f"\n" + "=" * 50)
         print(f"=== Task {i+1}: {task_datasets} ===")
@@ -874,12 +863,12 @@ def main(args):
         cov_loader = DataLoader(
             merged_dataset, batch_size=args.batch_size, shuffle=False,
             num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=False)
+            persistent_workers=args.num_workers > 0)
         merged_loader = DataLoader(
             merged_dataset, batch_size=args.batch_size,
             sampler=InfiniteSampler(merged_dataset, shuffle=True, seed=args.seed),
             num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=False)
+            persistent_workers=args.num_workers > 0)
         _RUN_TIMER.stop("data_load")
         task_train_iterations, task_epochs = _resolve_task_train_iterations(
             args, task_datasets, len(merged_loader))
@@ -1197,11 +1186,9 @@ def main(args):
             eval_label_offset = dataset_label_offsets[d_name]
 
             te_loader, cached_c_names = test_loader_cache[d_name]
-            zs_acc, rgda_acc, ens_acc, lada_acc, lada_zs_acc, c_len, sensitivity = evaluate_dataset(
+            zs_acc, rgda_acc, ens_acc, lada_acc, lada_zs_acc, c_len, _ = evaluate_dataset(
                 args, d_name, model, zeroshot_classifier, lr_rgda_classifier,
                 current_num_classes, eval_label_offset,
-                alpha_sensitivity=args.alpha_sensitivity,
-                n_alpha_samples=21,
                 lada_classifier=lada_classifier,
                 lada_alpha=args.lada_alpha,
                 eval_batch_size=args.eval_batch_size,
@@ -1209,23 +1196,6 @@ def main(args):
                 c_names=cached_c_names,
                 keep_features_on_device=args.eval_keep_features_on_device,
             )
-            if args.alpha_sensitivity and sensitivity is not None:
-                if alpha_values is None:
-                    if isinstance(sensitivity, dict):
-                        alpha_values = [s[0] for s in sensitivity["lr"]]
-                    else:
-                        alpha_values = [s[0] for s in sensitivity]
-                if isinstance(sensitivity, dict):
-                    lr_sens = sensitivity["lr"]
-                    lada_sens = sensitivity.get("lada")
-                else:
-                    lr_sens = sensitivity
-                    lada_sens = None
-                for idx, (a, acc) in enumerate(lr_sens):
-                    alpha_sweep_lr.setdefault(idx, {}).setdefault(i, {})[d_name] = acc / 100.0
-                if lada_sens is not None and alpha_sweep_lada is not None:
-                    for idx, (a, acc) in enumerate(lada_sens):
-                        alpha_sweep_lada.setdefault(idx, {}).setdefault(i, {})[d_name] = acc / 100.0
             expected_c_len = dataset_class_counts[d_name]
             if c_len != expected_c_len:
                 raise ValueError(
@@ -1275,61 +1245,6 @@ def main(args):
     _print_lada_metrics("Zero-shot Baseline", metrics_zs, task_names)
     _print_lada_metrics("LR-RGDA Only", metrics_rgda, task_names)
     _print_lada_metrics(f"Ours Ensemble (alpha={args.alpha})", metrics_ens, task_names)
-
-    # ========== Alpha sensitivity sweep summary ==========
-    if args.alpha_sensitivity and alpha_sweep_lr is not None and alpha_values is not None:
-        print("\n" + "=" * 110)
-        print("[Alpha Sensitivity Sweep] Transfer / Average / Last per alpha")
-        print("=" * 110)
-
-        def _alpha_tracker_to_stats(tracker):
-            matrix = tracker.accuracy_matrix.tolist()
-            return get_full_stats(matrix)
-
-        sweep_records = []
-        for idx, a in enumerate(alpha_values):
-            if idx not in alpha_sweep_lr:
-                continue
-            tracker = ContinualLearningMetrics(task_names)
-            for step, task_accs in alpha_sweep_lr[idx].items():
-                tracker.update(step, task_accs)
-            stats = _alpha_tracker_to_stats(tracker)
-            sweep_records.append((a, stats))
-
-        header = f"{'Alpha':>8} | {'Transfer':>10} | {'Average':>10} | {'Last':>10}"
-        print(header)
-        print("-" * 50)
-        best_idx = max(range(len(sweep_records)), key=lambda i: sweep_records[i][1]["average_total_avg"])
-        for i, (a, stats) in enumerate(sweep_records):
-            marker = " <- best (Average)" if i == best_idx else ""
-            print(f"{a:8.2f} | {stats['transfer_total_avg']:10.2f} | {stats['average_total_avg']:10.2f} | {stats['last_total_avg']:10.2f}{marker}")
-        print("-" * 50)
-        best_a, best_stats = sweep_records[best_idx]
-        print(f"Best alpha (by Average): {best_a:.2f} -> Transfer={best_stats['transfer_total_avg']:.2f}, Average={best_stats['average_total_avg']:.2f}, Last={best_stats['last_total_avg']:.2f}")
-
-        if alpha_sweep_lada is not None:
-            lada_sweep_records = []
-            for idx, a in enumerate(alpha_values):
-                if idx not in alpha_sweep_lada:
-                    continue
-                tracker = ContinualLearningMetrics(task_names)
-                for step, task_accs in alpha_sweep_lada[idx].items():
-                    tracker.update(step, task_accs)
-                stats = _alpha_tracker_to_stats(tracker)
-                lada_sweep_records.append((a, stats))
-            if lada_sweep_records:
-                print("\n" + "-" * 50)
-                print("[LADA+ZS Alpha Sensitivity Sweep]")
-                print(header)
-                print("-" * 50)
-                best_lada_idx = max(range(len(lada_sweep_records)), key=lambda i: lada_sweep_records[i][1]["average_total_avg"])
-                for i, (a, stats) in enumerate(lada_sweep_records):
-                    marker = " <- best (Average)" if i == best_lada_idx else ""
-                    print(f"{a:8.2f} | {stats['transfer_total_avg']:10.2f} | {stats['average_total_avg']:10.2f} | {stats['last_total_avg']:10.2f}{marker}")
-                print("-" * 50)
-                best_la, best_lstats = lada_sweep_records[best_lada_idx]
-                print(f"Best LADA+ZS alpha (by Average): {best_la:.2f} -> Transfer={best_lstats['transfer_total_avg']:.2f}, Average={best_lstats['average_total_avg']:.2f}, Last={best_lstats['last_total_avg']:.2f}")
-        print("=" * 110)
     if args.enable_lada:
         _print_lada_metrics(
             f"LADA Only (score={args.lada_score_mode}, k={args.lada_k})",

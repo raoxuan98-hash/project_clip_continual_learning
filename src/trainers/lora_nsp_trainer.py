@@ -453,6 +453,7 @@ class LoRANSPTrainer:
         # versions. Use 0 so low text-LR groups are not raised above their
         # initial LR by the previous base_lr / 3 floor.
         scheduler_type = getattr(self.args, "scheduler", "cosine")
+        eta_min = getattr(self.args, "eta_min", 0.0)
         if scheduler_type == "onecycle":
             scheduler = OneCycleLR(
                 optimizer,
@@ -461,7 +462,7 @@ class LoRANSPTrainer:
             )
         elif scheduler_type == "cosine":
             scheduler = CosineAnnealingLR(optimizer, T_max=train_iterations,
-                                          eta_min=0.0)
+                                          eta_min=eta_min)
         elif scheduler_type == "linear":
             scheduler = LambdaLR(
                 optimizer,
@@ -471,11 +472,12 @@ class LoRANSPTrainer:
             scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
         elif scheduler_type == "cosine_with_warmup":
             warmup_steps = int(0.1 * train_iterations)
+            eta_min_ratio = eta_min / max(self.args.lr, 1e-12)
             def cosine_with_warmup_lr(step):
                 if step < warmup_steps:
                     return step / max(1, warmup_steps)
                 progress = (step - warmup_steps) / max(1, train_iterations - warmup_steps)
-                return 0.5 * (1.0 + math.cos(math.pi * progress))
+                return eta_min_ratio + (1.0 - eta_min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
             scheduler = LambdaLR(optimizer, lr_lambda=cosine_with_warmup_lr)
         else:
             raise ValueError(f"Unsupported scheduler: {scheduler_type}")
