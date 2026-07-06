@@ -1,0 +1,15 @@
+{
+  "baseline_score": 54.72,
+  "trunk_score": 54.72,
+  "test_baseline_score": null,
+  "test_trunk_score": null,
+  "eval_cmd": "cd {cwd} && python main_incremental.py --dataset_sequence aircraft caltech101 dtd eurosat --num_shots 16 --batch_size 64 --iterations 800 --seed 42 --lora_type lora_nsp --classifier_feature_transform test --root /data1/open_datasets/X-TAIL --output_dir experiments/null_basis_ablation/iter800 --experiment_name {node_id}",
+  "eval_cmd_test": null,
+  "eval_timeout": null,
+  "eval_retries": null,
+  "eval_retry_base_delay": null,
+  "eval_retry_max_delay": null,
+  "dataset_info": "Datasets: aircraft, caltech101, dtd, eurosat at /data1/open_datasets/X-TAIL. Evaluation: B_dev = same datasets (no separate test set). Primary metric: Average accuracy (average_total_avg from LADA metrics).",
+  "metric_direction": "maximize",
+  "created_at": "2026-06-26T13:20:32.895137+00:00"
+}

@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
+from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR, LambdaLR
 from tqdm import tqdm
 from typing import Dict, Optional
 import logging
+import math
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -76,8 +78,12 @@ class LoRANSPTrainer:
             logging.info(f"Loading text covariance history with {len(self.text_covariance_history)} layers")
             self.model.text_model.update_projection_matrices(self.text_covariance_history)
 
-    def encode_text(self, text):
-        text_inputs = self.processor(text=text, return_tensors="pt", padding=True, truncation=True)
+    def _tokenize_texts(self, text):
+        """CPU tokenization（可被缓存复用）。"""
+        return self.processor(text=text, return_tensors="pt", padding=True, truncation=True)
+
+    def _encode_text_from_inputs(self, text_inputs):
+        """从已 tokenize 的输入直接过 text encoder。"""
         text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
         text_outputs = self.model.text_model(**text_inputs)
         if hasattr(text_outputs, 'pooler_output') and text_outputs.pooler_output is not None:
@@ -89,22 +95,34 @@ class LoRANSPTrainer:
         text_features = self.model.text_projection(pooled)
         return text_features
 
+    def encode_text(self, text):
+        text_inputs = self._tokenize_texts(text)
+        return self._encode_text_from_inputs(text_inputs)
+
     def encode_image(self, img):
         return self.model.get_image_features(img)
 
-    def zeroshot_classifier(self, classnames, templates, use_grad=False):
-        """构造 ZS 分类器矩阵 [feature_dim, num_classes]（批量编码，可选梯度）"""
-        all_texts = []
-        class_text_counts = []
-        for classname in classnames:
-            classname = classname.replace('_', ' ')
-            texts = [template(classname) for template in templates]
-            all_texts.extend(texts)
-            class_text_counts.append(len(texts))
+    def zeroshot_classifier(self, classnames, templates, use_grad=False,
+                            precomputed_text_inputs=None):
+        """构造 ZS 分类器矩阵 [feature_dim, num_classes]（批量编码，可选梯度）。
 
+        若提供 precomputed_text_inputs，则跳过 CPU tokenization，直接过 text encoder。
+        此时要求输入已按 (class0_template0, class0_template1, ..., classN_templateM) 排列。
+        """
         ctx = torch.enable_grad() if use_grad else torch.no_grad()
         with ctx:
-            all_embeddings = self.encode_text(all_texts)
+            if precomputed_text_inputs is not None:
+                all_embeddings = self._encode_text_from_inputs(precomputed_text_inputs)
+                class_text_counts = [len(templates)] * len(classnames)
+            else:
+                all_texts = []
+                class_text_counts = []
+                for classname in classnames:
+                    classname = classname.replace('_', ' ')
+                    texts = [template(classname) for template in templates]
+                    all_texts.extend(texts)
+                    class_text_counts.append(len(texts))
+                all_embeddings = self.encode_text(all_texts)
             all_embeddings = all_embeddings / all_embeddings.norm(dim=-1, keepdim=True)
 
         zeroshot_weights = []
@@ -118,26 +136,76 @@ class LoRANSPTrainer:
         return torch.stack(zeroshot_weights, dim=1).to(self.device)
 
     def get_optimizer(self, params, lr, weight_decay, iterations):
-        optimizer = torch.optim.AdamW(params, lr, weight_decay=weight_decay)
+        optimizer = self._create_optimizer_from_params(params, lr, weight_decay)
         scheduler = CosineAnnealingLR(optimizer, T_max=iterations, eta_min=lr/3)
         return optimizer, scheduler
 
+    def _create_optimizer(self, param_groups):
+        """根据 args.optimizer 创建优化器（支持 param_groups 多学习率）。"""
+        opt_name = getattr(self.args, "optimizer", "adamw").lower()
+        wd = getattr(self.args, "weight_decay", 0.0)
+
+        if opt_name == "adamw":
+            return torch.optim.AdamW(param_groups, weight_decay=wd)
+        elif opt_name == "adam":
+            return torch.optim.Adam(param_groups, weight_decay=wd)
+        elif opt_name == "sgd":
+            momentum = getattr(self.args, "momentum", 0.9)
+            return torch.optim.SGD(param_groups, momentum=momentum, weight_decay=wd, nesterov=True)
+        elif opt_name == "adagrad":
+            return torch.optim.Adagrad(param_groups, weight_decay=wd)
+        elif opt_name == "rmsprop":
+            return torch.optim.RMSprop(param_groups, weight_decay=wd)
+        else:
+            raise ValueError(f"Unsupported optimizer: {opt_name}")
+
+    def _create_optimizer_from_params(self, params, lr, weight_decay):
+        """根据 args.optimizer 创建优化器（单参数组）。"""
+        opt_name = getattr(self.args, "optimizer", "adamw").lower()
+        if opt_name == "adamw":
+            return torch.optim.AdamW(params, lr, weight_decay=weight_decay)
+        elif opt_name == "adam":
+            return torch.optim.Adam(params, lr, weight_decay=weight_decay)
+        elif opt_name == "sgd":
+            momentum = getattr(self.args, "momentum", 0.9)
+            return torch.optim.SGD(params, lr, momentum=momentum, weight_decay=weight_decay, nesterov=True)
+        elif opt_name == "adagrad":
+            return torch.optim.Adagrad(params, lr, weight_decay=weight_decay)
+        elif opt_name == "rmsprop":
+            return torch.optim.RMSprop(params, lr, weight_decay=weight_decay)
+        else:
+            raise ValueError(f"Unsupported optimizer: {opt_name}")
+
     def _extract_covariances_from_modules(self, lora_modules, forward_fn, data_iter,
                                            desc="Collecting features"):
-        """通用协方差提取"""
+        """通用协方差提取（同层 q/k/v 共享输入空间，只挂一个 hook）"""
         torch.cuda.empty_cache()
         self.model.eval()
 
         module_names = list(lora_modules.keys())
         logging.info(f"Found {len(module_names)} LoRA modules")
 
-        hooks, feature_extractors, running_xtx = {}, {}, {}
+        # === 按输入源分组：同层 q/k/v 共享协方差 ===
+        def _input_group_key(name):
+            import re
+            m = re.match(r"layer_(\d+)_attn_(q_proj|k_proj|v_proj)$", name)
+            if m:
+                return f"layer_{m.group(1)}_attn_qkv_shared"
+            return name
+
+        groups = {}
         for name in module_names:
+            gkey = _input_group_key(name)
+            groups.setdefault(gkey, []).append(name)
+
+        hooks, feature_extractors, running_xtx = {}, {}, {}
+        for gkey, names in groups.items():
             extractor = FeatureExtractorHook()
-            hook = lora_modules[name].register_forward_hook(extractor)
-            hooks[name] = hook
-            feature_extractors[name] = extractor
-            running_xtx[name] = None
+            # 每组只挂一个 hook（取第一个代表）
+            hook = lora_modules[names[0]].register_forward_hook(extractor)
+            hooks[gkey] = hook
+            feature_extractors[gkey] = extractor
+            running_xtx[gkey] = None
 
         total_observations = 0
         for batch_data in tqdm(data_iter, desc=desc, leave=False):
@@ -145,34 +213,34 @@ class LoRANSPTrainer:
             batch_input = batch_input.to(self.device)
             _ = forward_fn(batch_input)
 
-            for name in module_names:
-                batch_feats = feature_extractors[name].get_features()
+            for gkey in groups:
+                batch_feats = feature_extractors[gkey].get_features()
                 if batch_feats is not None:
                     batch_feats = batch_feats.to(torch.float32)
                     if batch_feats.dim() == 3:
                         batch_feats = batch_feats.reshape(-1, batch_feats.shape[-1])
                     xtx_batch = batch_feats.t() @ batch_feats
-                    if running_xtx[name] is None:
-                        running_xtx[name] = xtx_batch
+                    if running_xtx[gkey] is None:
+                        running_xtx[gkey] = xtx_batch
                     else:
-                        running_xtx[name] += xtx_batch
-                    feature_extractors[name].clear()
-
-            if batch_feats is not None:
-                total_observations += batch_feats.shape[0]
+                        running_xtx[gkey] += xtx_batch
+                    feature_extractors[gkey].clear()
+                    total_observations += batch_feats.shape[0]
 
         covariances = {}
-        for name in module_names:
-            if running_xtx[name] is not None:
-                cov = running_xtx[name] / total_observations
+        for gkey, names in groups.items():
+            if running_xtx[gkey] is not None:
+                cov = running_xtx[gkey] / total_observations
                 eps = 1e-6
                 cov = (cov + cov.t()) / 2.0
                 cov = cov + torch.eye(cov.shape[0], device=cov.device) * eps
                 if torch.isnan(cov).any() or torch.isinf(cov).any():
-                    logging.warning(f"Layer {name} contains NaN or Inf. Cleaning...")
+                    logging.warning(f"Group {gkey} contains NaN or Inf. Cleaning...")
                     cov = torch.nan_to_num(cov, nan=0.0, posinf=1.0, neginf=-1.0)
-                covariances[name] = cov.to('cpu')
-            hooks[name].remove()
+                # 同一协方差复制给组内所有模块名字
+                for name in names:
+                    covariances[name] = cov.to('cpu')
+            hooks[gkey].remove()
 
         logging.info(f"Extracted covariances for {len(covariances)} layers")
         return covariances
@@ -217,21 +285,52 @@ class LoRANSPTrainer:
             desc="Collecting text features",
         )
 
-    def update_covariance_history(self, new_covariances: Dict[str, torch.Tensor]):
-        """更新图像协方差历史并更新投影矩阵（等权平均）"""
+    def update_covariance_history(
+        self,
+        new_covariances: Dict[str, torch.Tensor],
+        update_projection: bool = True,
+        update_basis: bool = False,
+    ):
+        """更新图像协方差历史（等权平均），并可选择更新投影矩阵 / basis 矩阵。"""
         logging.info(f"=== Updating Image Covariance History ===")
+        update_fn = self._no_op
+        if update_projection and update_basis:
+            def update_fn(covs):
+                self.model.vision_model.update_projection_matrices(covs)
+                self.model.vision_model.update_basis_matrices(covs)
+        elif update_projection:
+            update_fn = self.model.vision_model.update_projection_matrices
+        elif update_basis:
+            update_fn = self.model.vision_model.update_basis_matrices
         self._apply_covariance_update(
             new_covariances, self.covariance_history, self.covariance_counts,
-            self.model.vision_model.update_projection_matrices, "image")
+            update_fn, "image")
 
-    def update_text_covariance_history(self, new_covariances: Dict[str, torch.Tensor]):
-        """更新文本协方差历史并更新投影矩阵（等权平均）"""
+    def _no_op(self, x):
+        pass
+
+    def update_text_covariance_history(
+        self,
+        new_covariances: Dict[str, torch.Tensor],
+        update_projection: bool = True,
+        update_basis: bool = False,
+    ):
+        """更新文本协方差历史（等权平均），并可选择更新投影矩阵 / basis 矩阵。"""
         if not new_covariances:
             return
         logging.info(f"=== Updating Text Covariance History ===")
+        update_fn = self._no_op
+        if update_projection and update_basis:
+            def update_fn(covs):
+                self.model.text_model.update_projection_matrices(covs)
+                self.model.text_model.update_basis_matrices(covs)
+        elif update_projection:
+            update_fn = self.model.text_model.update_projection_matrices
+        elif update_basis:
+            update_fn = self.model.text_model.update_basis_matrices
         self._apply_covariance_update(
             new_covariances, self.text_covariance_history, self.text_covariance_counts,
-            self.model.text_model.update_projection_matrices, "text")
+            update_fn, "text")
 
     def _apply_covariance_update(self, new_covariances, history_dict, count_dict, update_fn, tag):
         """通用协方差等权平均 + 投影矩阵更新"""
@@ -313,6 +412,15 @@ class LoRANSPTrainer:
         text_lr = self.args.lr if text_lr is None else float(text_lr)
         text_grad_enabled = self.has_text_adapter and train_text_encoder and text_lr > 0
 
+        # 预 tokenize 类名提示，避免训练循环每步重复 CPU tokenization
+        precomputed_class_tokens = None
+        if self.has_text_adapter and text_grad_enabled and n_classes <= max_zs_classes:
+            all_class_prompts = []
+            for classname in class_names:
+                classname_clean = classname.replace('_', ' ')
+                all_class_prompts.extend([template(classname_clean) for template in templates])
+            precomputed_class_tokens = self._tokenize_texts(all_class_prompts)
+
         if self.has_text_adapter and text_grad_enabled:
             precomputed_classifier = None
         else:
@@ -337,10 +445,10 @@ class LoRANSPTrainer:
             feature_dim = self.model.config.projection_dim
             self.aux_head = nn.Linear(feature_dim, n_classes, bias=False).to(self.device)
             param_groups.append({'params': self.aux_head.parameters(), 'lr': 5e-3})
-            optimizer = torch.optim.AdamW(param_groups, weight_decay=self.args.weight_decay)
+            optimizer = self._create_optimizer(param_groups)
         else:
             self.aux_head = None
-            optimizer = torch.optim.AdamW(param_groups, weight_decay=self.args.weight_decay)
+            optimizer = self._create_optimizer(param_groups)
         # A scalar eta_min keeps CosineAnnealingLR compatible across PyTorch
         # versions. Use 0 so low text-LR groups are not raised above their
         # initial LR by the previous base_lr / 3 floor.
@@ -354,8 +462,26 @@ class LoRANSPTrainer:
         elif scheduler_type == "cosine":
             scheduler = CosineAnnealingLR(optimizer, T_max=train_iterations,
                                           eta_min=0.0)
+        elif scheduler_type == "linear":
+            scheduler = LambdaLR(
+                optimizer,
+                lr_lambda=lambda step: 1.0 - (step / train_iterations),
+            )
+        elif scheduler_type == "constant":
+            scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+        elif scheduler_type == "cosine_with_warmup":
+            warmup_steps = int(0.1 * train_iterations)
+            def cosine_with_warmup_lr(step):
+                if step < warmup_steps:
+                    return step / max(1, warmup_steps)
+                progress = (step - warmup_steps) / max(1, train_iterations - warmup_steps)
+                return 0.5 * (1.0 + math.cos(math.pi * progress))
+            scheduler = LambdaLR(optimizer, lr_lambda=cosine_with_warmup_lr)
         else:
             raise ValueError(f"Unsupported scheduler: {scheduler_type}")
+
+        use_amp = getattr(self.args, 'amp', True)
+        scaler = GradScaler('cuda') if use_amp else None
 
         logit_scale = self.model.logit_scale.detach()
 
@@ -381,109 +507,139 @@ class LoRANSPTrainer:
             images = images.to(self.device)
             labels = labels.to(self.device)
 
-            # --- 前向传播 ---
-            vision_ctx = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
-            with vision_ctx:
-                proj_feats = self.model.get_image_features(images)
-            norm_feats = proj_feats / proj_feats.norm(dim=-1, keepdim=True)
+            with autocast('cuda'):
+                # --- 前向传播 ---
+                vision_ctx = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
+                with vision_ctx:
+                    proj_feats = self.model.get_image_features(images)
+                norm_feats = proj_feats / proj_feats.norm(dim=-1, keepdim=True)
 
-            # --- ZS 分类器 ---
-            if self.has_text_adapter and text_grad_enabled:
-                if n_classes > max_zs_classes:
-                    # 联合训练场景：随机采样子集控制显存
-                    batch_classes = labels.unique().tolist()
-                    n_remaining = max_zs_classes - len(batch_classes)
-                    if n_remaining > 0:
-                        other_classes = [c for c in range(n_classes) if c not in batch_classes]
-                        sampled = _random.sample(other_classes, min(n_remaining, len(other_classes)))
-                        zs_class_indices = batch_classes + sampled
+                # --- ZS 分类器 ---
+                if self.has_text_adapter and text_grad_enabled:
+                    if n_classes > max_zs_classes:
+                        # 联合训练场景：随机采样子集控制显存
+                        batch_classes = labels.unique().tolist()
+                        n_remaining = max_zs_classes - len(batch_classes)
+                        if n_remaining > 0:
+                            other_classes = [c for c in range(n_classes) if c not in batch_classes]
+                            sampled = _random.sample(other_classes, min(n_remaining, len(other_classes)))
+                            zs_class_indices = batch_classes + sampled
+                        else:
+                            zs_class_indices = batch_classes[:max_zs_classes]
+                        zs_class_names = [class_names[idx] for idx in zs_class_indices]
+                        classifier = self.zeroshot_classifier(zs_class_names, templates, use_grad=True)
+                        idx_to_subidx = {orig: new for new, orig in enumerate(zs_class_indices)}
+                        remapped_labels = torch.tensor(
+                            [idx_to_subidx.get(lb.item(), -100) for lb in labels], device=labels.device)
                     else:
-                        zs_class_indices = batch_classes[:max_zs_classes]
-                    zs_class_names = [class_names[idx] for idx in zs_class_indices]
-                    classifier = self.zeroshot_classifier(zs_class_names, templates, use_grad=True)
-                    idx_to_subidx = {orig: new for new, orig in enumerate(zs_class_indices)}
-                    remapped_labels = torch.tensor(
-                        [idx_to_subidx.get(lb.item(), -100) for lb in labels], device=labels.device)
+                        # 增量训练场景：全量类名编码（~100 类，显存安全）
+                        classifier = self.zeroshot_classifier(
+                            class_names, templates, use_grad=True,
+                            precomputed_text_inputs=precomputed_class_tokens)
+                        remapped_labels = labels
                 else:
-                    # 增量训练场景：全量类名编码（~100 类，显存安全）
-                    classifier = self.zeroshot_classifier(class_names, templates, use_grad=True)
+                    classifier = precomputed_classifier
                     remapped_labels = labels
-            else:
-                classifier = precomputed_classifier
-                remapped_labels = labels
 
-            logits = logit_scale.exp() * (norm_feats @ classifier)
+                logits = logit_scale.exp() * (norm_feats @ classifier)
 
-            # SCE 损失
-            ce_loss = symmetric_cross_entropy_loss(
-                logits, remapped_labels,
-                getattr(self.args, 'sce_a', 0.5), getattr(self.args, 'sce_b', 0.5))
-            loss = ce_loss
-
-            preds = logits.argmax(dim=-1)
-            valid_mask = (remapped_labels != -100) if self.has_text_adapter and text_grad_enabled and n_classes > max_zs_classes else None
-            if valid_mask is not None and valid_mask.any():
-                train_acc = (preds[valid_mask] == remapped_labels[valid_mask]).float().mean().item() * 100
-            elif valid_mask is not None and not valid_mask.any():
-                train_acc = 0.0
-            else:
-                train_acc = (preds == remapped_labels).float().mean().item() * 100
-
-            aux_ce_val, aux_acc_val = 0.0, 0.0
-
-            # --- 辅助分类头 ---
-            if self.aux_head is not None:
-                aux_logits = self.aux_head(proj_feats)
-                aux_loss = symmetric_cross_entropy_loss(
-                    aux_logits, labels,
+                # SCE 损失
+                ce_loss = symmetric_cross_entropy_loss(
+                    logits, remapped_labels,
                     getattr(self.args, 'sce_a', 0.5), getattr(self.args, 'sce_b', 0.5))
-                loss = loss + aux_weight * aux_loss
-                aux_ce_val = aux_loss.item()
-                aux_preds = aux_logits.argmax(dim=-1)
-                aux_acc_val = (aux_preds == labels).float().mean().item() * 100
+                loss = ce_loss
 
-            l_fd_val, l_cd_val = 0.0, 0.0
-
-            # --- 蒸馏损失 ---
-            if reference_loader is not None and ref_iter is not None:
-                try:
-                    r_imgs, r_texts, t_img_f, t_txt_f = next(ref_iter)
-                except StopIteration:
-                    ref_iter = iter(reference_loader)
-                    r_imgs, r_texts, t_img_f, t_txt_f = next(ref_iter)
-
-                r_imgs = r_imgs.to(self.device)
-                t_img_f = t_img_f.to(self.device)
-                t_txt_f = t_txt_f.to(self.device)
-
-                vision_ctx_ref = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
-                with vision_ctx_ref:
-                    s_img_f = self.model.get_image_features(r_imgs)
-                s_img_f = s_img_f / s_img_f.norm(dim=-1, keepdim=True)
-
-                l_fd = feature_distillation_loss(t_img_f, s_img_f)
-                l_fd_val = l_fd.item()
-
-                # Text adapter enabled: use the adapted text encoder as the
-                # semantic anchor, with gradients only when it is trainable.
-                if self.has_text_adapter:
-                    text_ctx_ref = torch.enable_grad() if text_grad_enabled else torch.no_grad()
-                    with text_ctx_ref:
-                        s_txt_f = self.encode_text(r_texts)
-                        s_txt_f = s_txt_f / s_txt_f.norm(dim=-1, keepdim=True)
+                preds = logits.argmax(dim=-1)
+                valid_mask = (remapped_labels != -100) if self.has_text_adapter and text_grad_enabled and n_classes > max_zs_classes else None
+                if valid_mask is not None and valid_mask.any():
+                    train_acc = (preds[valid_mask] == remapped_labels[valid_mask]).float().mean().item() * 100
+                elif valid_mask is not None and not valid_mask.any():
+                    train_acc = 0.0
                 else:
-                    s_txt_f = t_txt_f
+                    train_acc = (preds == remapped_labels).float().mean().item() * 100
 
-                l_cd = cross_modal_distillation_loss(
-                    logit_scale, s_img_f, s_txt_f, t_img_f, t_txt_f, 2.0)
-                l_cd_val = l_cd.item()
+                aux_ce_val, aux_acc_val = 0.0, 0.0
 
-                loss = loss + self.args.fd_weight * l_fd + self.args.cd_weight * l_cd
+                # --- 辅助分类头 ---
+                if self.aux_head is not None:
+                    aux_logits = self.aux_head(proj_feats)
+                    aux_loss = symmetric_cross_entropy_loss(
+                        aux_logits, labels,
+                        getattr(self.args, 'sce_a', 0.5), getattr(self.args, 'sce_b', 0.5))
+                    loss = loss + aux_weight * aux_loss
+                    aux_ce_val = aux_loss.item()
+                    aux_preds = aux_logits.argmax(dim=-1)
+                    aux_acc_val = (aux_preds == labels).float().mean().item() * 100
+
+                l_fd_val, l_cd_val = 0.0, 0.0
+
+                # --- 蒸馏损失 ---
+                if reference_loader is not None and ref_iter is not None:
+                    try:
+                        ref_batch = next(ref_iter)
+                    except StopIteration:
+                        ref_iter = iter(reference_loader)
+                        ref_batch = next(ref_iter)
+
+                    # 兼容旧版 4 元组 (img, text, img_feat, txt_feat) 与新版 5 元组
+                    # (img, input_ids, attention_mask, img_feat, txt_feat)
+                    if len(ref_batch) == 5:
+                        r_imgs, r_input_ids, r_attention_mask, t_img_f, t_txt_f = ref_batch
+                        r_input_ids = r_input_ids.to(self.device)
+                        r_attention_mask = r_attention_mask.to(self.device)
+                        ref_texts_tokenized = {
+                            'input_ids': r_input_ids,
+                            'attention_mask': r_attention_mask,
+                        }
+                        ref_texts_raw = None
+                    else:
+                        r_imgs, r_texts, t_img_f, t_txt_f = ref_batch
+                        ref_texts_tokenized = None
+                        ref_texts_raw = r_texts
+
+                    r_imgs = r_imgs.to(self.device)
+                    t_img_f = t_img_f.to(self.device)
+                    t_txt_f = t_txt_f.to(self.device)
+
+                    vision_ctx_ref = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
+                    with vision_ctx_ref:
+                        s_img_f = self.model.get_image_features(r_imgs)
+                    s_img_f = s_img_f / s_img_f.norm(dim=-1, keepdim=True)
+
+                    l_fd = feature_distillation_loss(t_img_f, s_img_f)
+                    l_fd_val = l_fd.item()
+
+                    # Text adapter enabled: use the adapted text encoder as the
+                    # semantic anchor, with gradients only when it is trainable.
+                    if self.has_text_adapter:
+                        text_ctx_ref = torch.enable_grad() if text_grad_enabled else torch.no_grad()
+                        with text_ctx_ref:
+                            if ref_texts_tokenized is not None:
+                                s_txt_f = self._encode_text_from_inputs(ref_texts_tokenized)
+                            else:
+                                s_txt_f = self.encode_text(ref_texts_raw)
+                            s_txt_f = s_txt_f / s_txt_f.norm(dim=-1, keepdim=True)
+                    else:
+                        s_txt_f = t_txt_f
+
+                    cd_divergence = getattr(self.args, "cd_divergence", "kl_forward")
+                    cd_temperature = getattr(self.args, "cd_temperature", 2.0)
+                    l_cd = cross_modal_distillation_loss(
+                        logit_scale, s_img_f, s_txt_f, t_img_f, t_txt_f,
+                        temperature=cd_temperature, divergence=cd_divergence)
+                    l_cd_val = l_cd.item()
+
+                    loss = loss + self.args.fd_weight * l_fd + self.args.cd_weight * l_cd
 
             # --- 反向传播 ---
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
             scheduler.step()
 
             ema_loss = 0.95 * ema_loss + 0.05 * loss.item()

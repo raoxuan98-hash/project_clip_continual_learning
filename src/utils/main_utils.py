@@ -90,7 +90,9 @@ def combine_ensemble_logits(zs_logits, id_logits, current_num_classes, alpha, mo
 def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifier,
                      current_num_classes, eval_label_offset,
                      alpha_sensitivity=False, n_alpha_samples=21,
-                     lada_classifier=None, lada_alpha=1.0):
+                     lada_classifier=None, lada_alpha=1.0,
+                     eval_batch_size=None, te_loader=None,
+                     keep_features_on_device=False, c_names=None):
     """
     在单个数据集上评估 ZS / RGDA / Ensemble 准确率
 
@@ -106,6 +108,10 @@ def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifie
         n_alpha_samples: 敏感性分析时 alpha 的采样点数（默认 21，即 0, 0.05, ..., 1.0）
         lada_classifier: LADA 分类器实例（可选，传入后额外计算 LADA / LADA+ZS 指标）
         lada_alpha: LADA+ZS 集成中 LADA 的权重（默认 1.0）
+        eval_batch_size: 评估时 batch size（None 则退回到 args.batch_size）
+        te_loader: 可选的预构建测试 loader；提供时可避免重复构造 dataset
+        keep_features_on_device: 是否把测试特征保留在 GPU 上（省 CPU↔GPU 拷贝）
+        c_names: te_loader 提供时，对应数据集的类别名列表
 
     Returns:
         (zs_acc, rgda_acc, ens_acc, lada_acc, lada_zs_acc, num_classes_in_dataset, sensitivity_list)
@@ -114,30 +120,36 @@ def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifie
     from utils_data import get_xtail_trainloader, get_transforms
     from src.utils.feature_extractor import extract_features
 
-    _, test_transform = get_transforms(d_name)
-    _, _, te_loader, c_names = get_xtail_trainloader(
-        root=args.root, dataset_name=d_name,
-        transform_train=None, transform_test=test_transform,
-        num_shots=args.num_shots, batch_size=args.batch_size)
+    if te_loader is None:
+        batch_size = eval_batch_size if eval_batch_size is not None else args.batch_size
+        _, test_transform = get_transforms(d_name)
+        _, _, te_loader, c_names = get_xtail_trainloader(
+            root=args.root, dataset_name=d_name,
+            transform_train=None, transform_test=test_transform,
+            num_shots=args.num_shots, batch_size=batch_size,
+            num_workers=getattr(args, 'num_workers', 4))
+    else:
+        if c_names is None:
+            raise ValueError("te_loader is provided but c_names is missing")
 
-    features, labels = extract_features(model, te_loader, args.device)
+    features, labels = extract_features(
+        model, te_loader, args.device,
+        keep_on_device=keep_features_on_device)
 
     # 确保特征严格进行 L2 归一化
     features = features / features.norm(dim=-1, keepdim=True)
     features = features.to(args.device)
     labels = (labels + eval_label_offset).to(args.device)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         # Zero-shot 预测（不乘 logit_scale，与 debug_classifier_router.py 一致）
         ensemble_mode = getattr(args, "ensemble_normalize", "maxshift")
         zs_logits = features @ zeroshot_classifier
-        zs_logits_norm = _normalize_for_ensemble(zs_logits, "maxshift")
         zs_preds = zs_logits.argmax(dim=1)
         zs_acc = zs_preds.eq(labels).float().mean().item() * 100
 
         # 2. 纯 LR-RGDA 预测
         rgda_logits = lr_rgda_classifier.forward(features)
-        rgda_logits_norm = _normalize_for_ensemble(rgda_logits, "maxshift")
         rgda_preds = rgda_logits.argmax(dim=1)
         rgda_acc = rgda_preds.eq(labels).float().mean().item() * 100
 
@@ -164,11 +176,12 @@ def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifie
         lada_acc, lada_zs_acc = None, None
         if lada_classifier is not None:
             lada_logits = lada_classifier(features)
-            lada_logits_norm = lada_logits - lada_logits.max(dim=-1, keepdim=True).values
-            lada_preds = lada_logits_norm.argmax(dim=1)
+            lada_preds = lada_logits.argmax(dim=1)
             lada_acc = lada_preds.eq(labels).float().mean().item() * 100
 
-            lada_zs_logits = (1 - lada_alpha) * zs_logits_norm + lada_alpha * lada_logits_norm
+            lada_zs_logits = combine_ensemble_logits(
+                zs_logits, lada_logits, current_num_classes, lada_alpha, ensemble_mode
+            )
             lada_zs_preds = lada_zs_logits.argmax(dim=1)
             lada_zs_acc = lada_zs_preds.eq(labels).float().mean().item() * 100
 
@@ -186,7 +199,9 @@ def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifie
             if lada_classifier is not None:
                 lada_sensitivity = []
                 for alpha in torch.linspace(0, 1.0, n_alpha_samples):
-                    lada_zs_logits = (1 - alpha) * zs_logits_norm + alpha * lada_logits_norm
+                    lada_zs_logits = combine_ensemble_logits(
+                        zs_logits, lada_logits, current_num_classes, alpha, ensemble_mode
+                    )
                     lada_zs_preds = lada_zs_logits.argmax(dim=1)
                     lada_acc_alpha = lada_zs_preds.eq(labels).float().mean().item() * 100
                     lada_sensitivity.append((round(alpha.item(), 3), round(lada_acc_alpha, 2)))
@@ -271,7 +286,7 @@ def batch_evaluate_datasets(
     all_features = torch.cat(all_features)
     all_labels = torch.cat(all_labels)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         total = all_labels.numel()
         eval_chunk_size = int(getattr(args, "alpha_sweep_batch_size", 512) or 512)
         alpha_values = (
@@ -306,13 +321,11 @@ def batch_evaluate_datasets(
             # Zero-shot logits（不乘 logit_scale，与 debug_classifier_router.py 一致）
             ensemble_mode = getattr(args, "ensemble_normalize", "maxshift")
             zs_logits = features_chunk @ zeroshot_classifier
-            zs_logits_norm = _normalize_for_ensemble(zs_logits, "maxshift")
             zs_preds = zs_logits.argmax(dim=1)
             zs_correct += int(zs_preds.eq(labels_chunk).sum().item())
 
             # LR-RGDA logits. Keep this chunked: full-test LR-RGDA logits can exceed GPU memory.
             rgda_logits = lr_rgda_classifier.forward(features_chunk)
-            rgda_logits_norm = _normalize_for_ensemble(rgda_logits, "maxshift")
             rgda_preds = rgda_logits.argmax(dim=1)
             rgda_correct += int(rgda_preds.eq(labels_chunk).sum().item())
 
@@ -333,14 +346,15 @@ def batch_evaluate_datasets(
             ens_preds = ensemble_logits.argmax(dim=1)
             ens_correct += int(ens_preds.eq(labels_chunk).sum().item())
 
-            lada_logits_norm = None
+            lada_logits = None
             if lada_classifier is not None:
                 lada_logits = lada_classifier(features_chunk)
-                lada_logits_norm = lada_logits - lada_logits.max(dim=-1, keepdim=True).values
-                lada_preds = lada_logits_norm.argmax(dim=1)
+                lada_preds = lada_logits.argmax(dim=1)
                 lada_correct += int(lada_preds.eq(labels_chunk).sum().item())
 
-                lada_zs_logits = (1 - lada_alpha) * zs_logits_norm + lada_alpha * lada_logits_norm
+                lada_zs_logits = combine_ensemble_logits(
+                    zs_logits, lada_logits, num_id_classes, lada_alpha, ensemble_mode
+                )
                 lada_zs_preds = lada_zs_logits.argmax(dim=1)
                 lada_zs_correct += int(lada_zs_preds.eq(labels_chunk).sum().item())
 
@@ -352,8 +366,10 @@ def batch_evaluate_datasets(
                     ens_preds = ens_logits.argmax(dim=1)
                     sensitivity_correct[idx] += int(ens_preds.eq(labels_chunk).sum().item())
 
-                    if lada_logits_norm is not None:
-                        lada_zs_logits = (1 - a) * zs_logits_norm + a * lada_logits_norm
+                    if lada_logits is not None:
+                        lada_zs_logits = combine_ensemble_logits(
+                            zs_logits, lada_logits, num_id_classes, a, ensemble_mode
+                        )
                         lada_zs_preds = lada_zs_logits.argmax(dim=1)
                         lada_sensitivity_correct[idx] += int(
                             lada_zs_preds.eq(labels_chunk).sum().item()
@@ -428,7 +444,7 @@ def get_full_stats(matrix):
             if k == 0:
                 trans.append(0.0)  # placeholder for display
             else:
-                trans.append(sum(matrix[j][k] for j in range(k)) / k)
+                trans.append(sum(matrix[k][j] for j in range(k)) / k)
         # Transfer = mean of Transfer_k for k=2..K (K-1 values)
         transfer_values = [trans[k] for k in range(1, K)]
         transfer_total_avg = sum(transfer_values) / len(transfer_values)

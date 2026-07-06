@@ -1,6 +1,9 @@
 # In[]
 from torch import nn
-from src.models.lora_sgp import LoRACLIPVisionTransformer, LoRACLIPTextTransformer
+from src.models.lora_sgp import (
+    LoRACLIPVisionTransformer, LoRACLIPTextTransformer,
+    SGPBaseLoRA, SGPBaseDoRA,
+)
 from src.models.lora_baseline import VanillaLoRACLIPVisionTransformer, VanillaLoRACLIPTextTransformer
 from src.models.lada_text_adapter import LADAAdaptFormerCLIPTextTransformer
 from transformers import CLIPModel, CLIPProcessor
@@ -21,11 +24,21 @@ def get_clip_model(args, train_mode="lora"):
     local_files_only = _env_flag("CLIP_LOCAL_FILES_ONLY", False)
     model = CLIPModel.from_pretrained(
         model_name,
+        use_safetensors=use_safetensors,
         local_files_only=local_files_only,
+        attn_implementation="sdpa",
     )
+    # 关闭 attention 输出，避免 SDPA 回退到 eager / 产生警告，同时减少前向开销
+    for cfg in (model.config,
+                getattr(model, "vision_model", None),
+                getattr(model, "text_model", None)):
+        if cfg is not None:
+            cfg.output_attentions = False
+            cfg.output_hidden_states = False
     processor = CLIPProcessor.from_pretrained(
         model_name,
         local_files_only=local_files_only,
+        use_fast=True,
     )
 
     if train_mode == "frozen":
@@ -82,18 +95,25 @@ def get_clip_model(args, train_mode="lora"):
                         lora_dropout=dropout)
         
         elif lora_type == 'lora_nsp':
-            use_soft_projection = False
+            use_soft_projection = getattr(args, "use_soft_projection", False)
+            projection_param_mode = getattr(args, 'projection_param_mode', 'full')
+            basis_rank = getattr(args, 'basis_rank', None)
+            lora_class = SGPBaseDoRA if getattr(args, 'use_dora', True) else SGPBaseLoRA
             if getattr(args, 'tune_vision_encoder', True):
                 model.vision_model = LoRACLIPVisionTransformer(
                     model.vision_model,
                     r=rank,
                     use_soft_projection=use_soft_projection,
+                    weight_temp=getattr(args, 'weight_temp', 1.0),
+                    weight_kind=getattr(args, 'weight_kind', 'log1p'),
+                    weight_p=getattr(args, 'weight_p', 1.0),
                     nsp_eps=getattr(args, 'nsp_eps', 0.05),
                     nsp_weight=getattr(args, 'nsp_weight', 0.02),
-                    projection_param_mode=getattr(args, 'projection_param_mode', 'full'),
-                    basis_rank=getattr(args, 'basis_rank', 4),
-                    basis_window=getattr(args, 'basis_window', 'tail'),
-                    null_init_mode=getattr(args, 'null_init_mode', 'none'))
+                    projection_param_mode=projection_param_mode,
+                    basis_rank=basis_rank,
+                    lora_class=lora_class,
+                    target_modules=getattr(args, 'lora_target_modules', None),
+                    fused_qkv=getattr(args, 'fused_qkv', False))
             if getattr(args, 'tune_text_encoder', True):
                 if text_adapter_type == "lada_adaptformer":
                     maybe_wrap_lada_text_adapter()
@@ -103,22 +123,34 @@ def get_clip_model(args, train_mode="lora"):
                         r=getattr(args, 'text_lora_rank', 4),
                         use_soft_projection=use_soft_projection,
                         nsp_eps=getattr(args, 'nsp_eps', 0.05),
-                        nsp_weight=getattr(args, 'nsp_weight', 0.02))
+                        weight_temp=getattr(args, 'weight_temp', 1.0),
+                        weight_kind=getattr(args, 'weight_kind', 'log1p'),
+                        weight_p=getattr(args, 'weight_p', 1.0),
+                        nsp_weight=getattr(args, 'nsp_weight', 0.02),
+                        projection_param_mode=projection_param_mode,
+                        basis_rank=basis_rank,
+                        lora_class=lora_class,
+                        target_modules=getattr(args, 'lora_target_modules', None),
+                        fused_qkv=getattr(args, 'fused_qkv', False))
 
         elif lora_type == "lora_sgp":
             use_soft_projection = True
+            projection_param_mode = getattr(args, 'projection_param_mode', 'full')
+            basis_rank = getattr(args, 'basis_rank', None)
+            lora_class = SGPBaseDoRA if getattr(args, 'use_dora', True) else SGPBaseLoRA
             if getattr(args, 'tune_vision_encoder', True):
                 model.vision_model = LoRACLIPVisionTransformer(
                     model.vision_model,
                     r=rank,
                     weight_temp=getattr(args, 'weight_temp', 1.0),
-                    use_soft_projection=use_soft_projection,
                     weight_kind=getattr(args, 'weight_kind', 'log1p'),
                     weight_p=getattr(args, 'weight_p', 1.0),
-                    projection_param_mode=getattr(args, 'projection_param_mode', 'full'),
-                    basis_rank=getattr(args, 'basis_rank', 4),
-                    basis_window=getattr(args, 'basis_window', 'tail'),
-                    null_init_mode=getattr(args, 'null_init_mode', 'none'))
+                    use_soft_projection=use_soft_projection,
+                    projection_param_mode=projection_param_mode,
+                    basis_rank=basis_rank,
+                    lora_class=lora_class,
+                    target_modules=getattr(args, 'lora_target_modules', None),
+                    fused_qkv=getattr(args, 'fused_qkv', False))
             if getattr(args, 'tune_text_encoder', True):
                 if text_adapter_type == "lada_adaptformer":
                     maybe_wrap_lada_text_adapter()
@@ -127,9 +159,14 @@ def get_clip_model(args, train_mode="lora"):
                         model.text_model,
                         r=getattr(args, 'text_lora_rank', 4),
                         weight_temp=getattr(args, 'weight_temp', 1.0),
-                        use_soft_projection=use_soft_projection,
                         weight_kind=getattr(args, 'weight_kind', 'log1p'),
-                        weight_p=getattr(args, 'weight_p', 1.0))
+                        weight_p=getattr(args, 'weight_p', 1.0),
+                        use_soft_projection=use_soft_projection,
+                        projection_param_mode=projection_param_mode,
+                        basis_rank=basis_rank,
+                        lora_class=lora_class,
+                        target_modules=getattr(args, 'lora_target_modules', None),
+                        fused_qkv=getattr(args, 'fused_qkv', False))
         else:
             raise ValueError(f"Unsupported lora_type: {lora_type}")
 

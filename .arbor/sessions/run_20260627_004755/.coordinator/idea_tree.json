@@ -1,0 +1,85 @@
+{
+  "version": 3,
+  "meta": {
+    "baseline_score": null,
+    "trunk_score": null,
+    "test_baseline_score": null,
+    "test_trunk_score": null,
+    "eval_cmd": "cd {cwd} && CLIP_MODEL_NAME=\"/home/raoxuan/.cache/huggingface/hub/models--openai--clip-vit-base-patch16/snapshots/57c216476eefef5ab752ec549e440a49ae4ae5f3/\" CLIP_USE_SAFETENSORS=false /home/raoxuan/miniconda3/envs/Simian_env/bin/python main_incremental.py --dataset_sequence aircraft caltech101 dtd eurosat --num_shots 16 --batch_size 64 --iterations 800 --lora_type lora_nsp --classifier_feature_transform test --seed 42 --output_dir experiments/null_basis_ablation/iter800 --experiment_name {node_id}",
+    "eval_cmd_test": "cd {cwd} && CLIP_MODEL_NAME=\"/home/raoxuan/.cache/huggingface/hub/models--openai--clip-vit-base-patch16/snapshots/57c216476eefef5ab752ec549e440a49ae4ae5f3/\" CLIP_USE_SAFETENSORS=false /home/raoxuan/miniconda3/envs/Simian_env/bin/python main_incremental.py --dataset_sequence aircraft caltech101 dtd eurosat flowers food101 mnist oxford_pets stanford_cars sun397 --num_shots 16 --batch_size 64 --iterations 800 --lora_type lora_nsp --classifier_feature_transform test --seed 42 --output_dir experiments/null_basis_ablation/iter800 --experiment_name {node_id}",
+    "eval_timeout": null,
+    "eval_retries": null,
+    "eval_retry_base_delay": null,
+    "eval_retry_max_delay": null,
+    "dataset_info": "X-TAIL at /data1/open_datasets/X-TAIL. 10 datasets: aircraft, caltech101, dtd, eurosat, flowers, food101, mnist, oxford_pets, stanford_cars, sun397. B_dev: first 4 (aircraft, caltech101, dtd, eurosat) at 800 iters. B_test: full 10-dataset sequence at 800 iters. 16-shot setting. Metrics: Ensemble Average, Transfer, Last.",
+    "metric_direction": "maximize",
+    "submission_path": null,
+    "sample_submission_path": null
+  },
+  "root_id": "ROOT",
+  "max_depth": 2,
+  "nodes": {
+    "ROOT": {
+      "id": "ROOT",
+      "parent_id": null,
+      "children_ids": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ],
+      "depth": 0,
+      "hypothesis": "Phase 1: Verify 4 key experiments at 800-iter on aircraft caltech101 dtd eurosat, 2x2 grid: (current_nsp, hist_null_init_only) x (FdCd=0, FdCd=1). Use --lora_type lora_nsp --classifier_feature_transform test --batch_size 64 --seed 42. Run parallel on separate GPUs. Output experiments/null_basis_ablation/iter800/. Phase 2: Autonomously research to improve continual learning. Explore text encoder schedules, distillation weights, LoRA ranks, aux loss, projection/basis setups. Maximize Ensemble Average. Data at /data1/open_datasets/X-TAIL.",
+      "status": "done",
+      "insight": "Progress on the plasticity/stability grid experiment is stalled at the execution stage. The `use_safetensors` fix resolved model loading, but a new device-mismatch error in `_compute_lora_delta` blocks the planned ablation (null-basis: current_nsp vs. hist_null_init_only, FdCd=0 vs. 1). No empirical insights have been generated yet. The immediate priority is to debug and resolve the device-mismatch bug to unblock the experiment and test the hypotheses that hist_null_init_only + vision-only maximizes plasticity, while current_nsp + full recipe maximizes stability."
+    },
+    "1": {
+      "id": "1",
+      "parent_id": "ROOT",
+      "children_ids": [
+        "1.1"
+      ],
+      "depth": 1,
+      "hypothesis": "Mechanism: Null-basis ablation — 2x2 grid: (current_nsp, hist_null_init_only) × (FdCd=0, FdCd=1) at 800 iters on 4 datasets.\nHypothesis: This grid establishes the baseline landscape for Phase 2. Based on the 200-iter screening, hist_null_init_only should outperform current_nsp in vision-only mode (+0.56 avg on 3ds), but the FD/CD distillation may interact differently with each null-init variant.\nObservable: Ensemble Average scores across 4 configurations. Expect hist_null_init_only + vision_only to be best for plasticity, current_nsp + full_recipe to be best for stability.\nConflicts: none — confirmatory grid, no prior conflicts.",
+      "status": "running",
+      "insight": "4 experiments launched on GPUs 0-3. All running successfully: (1) current_nsp + full_recipe on GPU0, (2) current_nsp + vision_only on GPU1, (3) hist_null_init_only + vision_only on GPU2, (4) hist_null_init_only + full_recipe on GPU3. ETA ~6-8 hours for completion."
+    },
+    "1.1": {
+      "id": "1.1",
+      "parent_id": "1",
+      "children_ids": [],
+      "depth": 2,
+      "hypothesis": "Mechanism: Remove `use_safetensors` kwarg from CLIPModel.from_pretrained() in src/models/clip.py — transformers 4.15.0 passes it through to CLIPModel.__init__() which rejects it.\nHypothesis: This is an environment compatibility fix, not a research change. All 4 Phase 1 experiments fail without this.\nObservable: Experiments start successfully.\nConflicts: none — pure compatibility fix.",
+      "status": "merged",
+      "insight": "Fixed transformers 4.15.0 compatibility: removed use_safetensors kwarg from CLIPModel.from_pretrained(). Fix committed to trunk (e5a1c2e).",
+      "result": "Removing `use_safetensors` resolved the TypeError crash. Model loading succeeded, but the experiment later crashed in `lora_sgp.py` due to a pre-existing device mismatch bug.",
+      "code_ref": "coordinator/n1-1-mechanism-remove-use-safetensors-ee34cfb2",
+      "eval_status": "failed_to_run",
+      "stop_reason": "finished"
+    },
+    "2": {
+      "id": "2",
+      "parent_id": "ROOT",
+      "children_ids": [],
+      "depth": 1,
+      "hypothesis": "Mechanism: Adaptive distillation scheduling — dynamically vary fd_weight and cd_weight across tasks (e.g., high distillation for early tasks to preserve them, tapering to lower distillation for later tasks to allow plasticity).\nHypothesis: Fixed distillation weights treat all tasks equally, but early tasks need more protection from forgetting while later tasks need more adaptation freedom. A monotonically decreasing schedule (e.g., fd_weight=1.5→0.5, cd_weight=1.5→0.5 over the 4-task sequence) should improve the stability-plasticity balance, yielding higher Average than fixed fd=cd=1.\nObservable: Ensemble Average on B_dev should increase by ≥2 points vs baseline (fixed fd=cd=1) on the 4-dataset sequence.\nConflicts: none — attacks an axis (distillation schedule) no prior node touched.",
+      "status": "pending"
+    },
+    "3": {
+      "id": "3",
+      "parent_id": "ROOT",
+      "children_ids": [],
+      "depth": 1,
+      "hypothesis": "Mechanism: Text encoder curriculum learning — systematically explore text_tuning_schedule variants beyond the simple freeze_after/low_lr_after. Key variants: (a) tune text for first K tasks then freeze, (b) progressively reduce text LR per task, (c) tune text only on tasks with large domain shifts.\nHypothesis: The text encoder shapes the semantic space used for zero-shot classification. Aggressive text tuning early builds a rich representation, while freezing later prevents interference. A well-chosen schedule could improve both Transfer (better semantic space) and Last (less interference), yielding +1–3 points Average.\nObservable: Transfer and Last metrics on B_dev. Expect Transfer improvement from early text tuning, Last improvement from later freezing.\nConflicts: none — explores text-tuning axis not covered by prior ablation (which only varied null_init_mode and projection_param_mode).",
+      "status": "pending"
+    },
+    "4": {
+      "id": "4",
+      "parent_id": "ROOT",
+      "children_ids": [],
+      "depth": 1,
+      "hypothesis": "Mechanism: Auxiliary loss as structured regularization — replace the simple linear aux_head with a deeper MLP aux_head or add multiple aux_heads at different feature levels (e.g., intermediate transformer layers), and tune aux_weight to provide complementary gradient signals that improve feature quality.\nHypothesis: The current aux_head (single linear layer, aux_weight=1.0) provides a weak regularization signal. A deeper aux_head or multi-level aux supervision could produce better-structured image features that are more robust to forgetting, without the computational cost of FD/CD distillation. This should improve Average by 1–3 points, especially when combined with reduced distillation.\nObservable: Compare Average with and without FD/CD. A deeper aux_head should reduce dependence on distillation.\nConflicts: none — attacks the aux_loss axis, orthogonal to prior null-basis ablation.",
+      "status": "pending"
+    }
+  }
+}

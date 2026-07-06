@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "token_scope": "research_agent_process_llm_only; excludes LLM calls made by external Bash/RunTraining/eval subprocesses",
+  "duration_seconds": 25680,
+  "duration_human": "7h08m00s",
+  "emergency_timeout": false,
+  "iterations": {
+    "total_nodes": 5,
+    "scored_nodes": 0,
+    "by_status": {
+      "running": 1,
+      "merged": 1,
+      "pending": 3
+    },
+    "best_score": null,
+    "baseline_score": null,
+    "trunk_score": null,
+    "test_baseline_score": null,
+    "test_trunk_score": null
+  },
+  "coordinator": {
+    "turns": 151,
+    "input_tokens": 15851269,
+    "uncached_input_tokens": 755589,
+    "cache_read_tokens": 15095680,
+    "cache_creation_tokens": 0,
+    "output_tokens": 73397,
+    "total_tokens": 15924666
+  },
+  "all_agents": {
+    "total_input_tokens": 16037598,
+    "total_uncached_input_tokens": 810718,
+    "total_cache_read_tokens": 15226880,
+    "total_cache_creation_tokens": 0,
+    "total_output_tokens": 81973,
+    "total_tokens": 16119571,
+    "total_llm_calls": 167,
+    "total_agents_spawned": 2
+  },
+  "model": "deepseek-v4-pro",
+  "provider": "OpenAICompatProvider"
+}

@@ -1,26 +1,51 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+from src.utils.infinite_sampler import InfiniteSampler
 
 class MergedReferenceDataset(Dataset):
     """
-    合并的参考数据集，用于蒸馏
+    合并的参考数据集，用于蒸馏。
+
+    支持两种模式：
+    - tokenized=False（默认）：返回 4 元组 (images, texts, img_features, txt_features)
+    - tokenized=True：返回 5 元组 (images, input_ids, attention_mask, img_features, txt_features)，
+      避免训练循环每步重复调用 tokenizer。
     """
-    def __init__(self, images, texts, img_features, txt_features):
+    def __init__(self, images, text_data, img_features, txt_features, tokenized=False):
         self.images = images
-        self.texts = texts
+        self.tokenized = tokenized
+        if tokenized:
+            self.text_input_ids, self.text_attention_mask = text_data
+        else:
+            self.texts = text_data
         self.img_features = img_features
         self.txt_features = txt_features
-    
+
     def __len__(self):
         return len(self.images)
-    
-    def __getitem__(self, idx):
-        return self.images[idx], self.texts[idx], self.img_features[idx], self.txt_features[idx]
 
-def load_reference_dataset(args, model_pretrain, processor, device):
+    def __getitem__(self, idx):
+        if self.tokenized:
+            return (self.images[idx],
+                    self.text_input_ids[idx],
+                    self.text_attention_mask[idx],
+                    self.img_features[idx],
+                    self.txt_features[idx])
+        else:
+            return (self.images[idx],
+                    self.texts[idx],
+                    self.img_features[idx],
+                    self.txt_features[idx])
+
+def load_reference_dataset(args, model_pretrain, processor, device,
+                           return_tokenized_text=False):
     """
     加载并缓存参考数据集（Flickr8K）用于蒸馏
+    Args:
+        return_tokenized_text: 若为 True，DataLoader 每批返回
+            (images, input_ids, attention_mask, img_features, txt_features)，
+            避免训练循环重复调用 tokenizer；否则返回原始 4 元组。
     Returns: DataLoader or None
     """
     if args.reference_dataset != "flickr8k":
@@ -56,12 +81,23 @@ def load_reference_dataset(args, model_pretrain, processor, device):
                 cached_t_img_feats.append(t_img_feat.cpu())
                 cached_t_txt_feats.append(t_txt_feat.cpu())
         
-        merged_ref_dataset = MergedReferenceDataset(
-            torch.cat(cached_imgs), cached_txts, 
-            torch.cat(cached_t_img_feats), torch.cat(cached_t_txt_feats)
-        )
+        # 预 tokenize 所有参考文本，避免训练循环重复 CPU tokenization
+        if return_tokenized_text:
+            all_texts = cached_txts
+            tokenized = processor(text=all_texts, return_tensors="pt", padding=True, truncation=True)
+            text_data = (tokenized["input_ids"], tokenized["attention_mask"])
+            merged_ref_dataset = MergedReferenceDataset(
+                torch.cat(cached_imgs), text_data,
+                torch.cat(cached_t_img_feats), torch.cat(cached_t_txt_feats),
+                tokenized=True)
+        else:
+            merged_ref_dataset = MergedReferenceDataset(
+                torch.cat(cached_imgs), cached_txts,
+                torch.cat(cached_t_img_feats), torch.cat(cached_t_txt_feats),
+                tokenized=False)
         reference_loader = DataLoader(
-            merged_ref_dataset, batch_size=32, shuffle=True, 
+            merged_ref_dataset, batch_size=32,
+            sampler=InfiniteSampler(merged_ref_dataset, shuffle=True, seed=42),
             num_workers=4, pin_memory=True
         )
         

@@ -22,10 +22,18 @@ class LADAClassifier(nn.Module):
         - joint_classifier: (K_total, C_total) 块对角 one-hot 矩阵
     """
 
-    def __init__(self, feature_dim: int, beta: float = 1.0):
+    VALID_SCORE_MODES = ("exp_sum", "linear_sum", "linear_max")
+
+    def __init__(self, feature_dim: int, beta: float = 1.0, score_mode: str = "exp_sum"):
         super().__init__()
         self.feature_dim = feature_dim
         self.beta = beta
+        self.score_mode = score_mode
+        if score_mode not in self.VALID_SCORE_MODES:
+            raise ValueError(
+                f"Unsupported LADA score_mode={score_mode!r}. "
+                f"Expected one of: {', '.join(self.VALID_SCORE_MODES)}."
+            )
 
         self.register_buffer('prev_lada_features', torch.empty(feature_dim, 0))
         self.register_buffer('joint_classifier', torch.empty(0, 0))
@@ -35,6 +43,14 @@ class LADAClassifier(nn.Module):
 
         self.num_prev_classes = 0
         self.num_curr_classes = 0
+
+    def set_score_mode(self, score_mode: str):
+        if score_mode not in self.VALID_SCORE_MODES:
+            raise ValueError(
+                f"Unsupported LADA score_mode={score_mode!r}. "
+                f"Expected one of: {', '.join(self.VALID_SCORE_MODES)}."
+            )
+        self.score_mode = score_mode
 
     def build_from_data(self, features, labels, k=16, label_offset=0):
         """
@@ -117,8 +133,26 @@ class LADAClassifier(nn.Module):
         device = image_features.device
         lada_features = lada_features.to(device)
         affinity = image_features @ lada_features
-        lada_logits = torch.exp(-self.beta * (1 - affinity)) @ self.joint_classifier.to(device)
-        return lada_logits
+        joint_classifier = self.joint_classifier.to(device)
+
+        if self.score_mode == "exp_sum":
+            return torch.exp(-self.beta * (1 - affinity)) @ joint_classifier
+        if self.score_mode == "linear_sum":
+            return affinity @ joint_classifier
+        if self.score_mode == "linear_max":
+            class_masks = joint_classifier.t().bool()
+            per_class_logits = []
+            for class_mask in class_masks:
+                if class_mask.any():
+                    per_class_logits.append(
+                        affinity[:, class_mask].max(dim=1).values
+                    )
+                else:
+                    per_class_logits.append(
+                        torch.full((affinity.shape[0],), -float("inf"), device=device)
+                    )
+            return torch.stack(per_class_logits, dim=1)
+        raise RuntimeError(f"Unexpected LADA score_mode={self.score_mode!r}")
 
     def fit(self, features, labels, iterations=100, lr=0.01, verbose=True):
         """

@@ -1,0 +1,822 @@
+1	import math
+2	import torch
+3	import torch.nn as nn
+4	import torch.nn.functional as F
+5	from typing import Dict, Iterable, Optional
+6	import logging
+7	
+8	def compute_weights(x: torch.Tensor, weight_kind="log1p", beta=1.0, weight_p=1.0, weight_alpha=0.5, weight_kappa=2.0) -> torch.Tensor:
+9	    if weight_kind == "exp":
+10	        return torch.exp(-beta * x)
+11	
+12	    elif weight_kind == "rational1":
+13	        return 1.0 / (1.0 + beta * x)
+14	
+15	    elif weight_kind == "rational2":
+16	        return 1.0 / (1.0 + beta * (x ** 2))
+17	
+18	    elif weight_kind == "sqrt_rational2":
+19	        return 1.0 / torch.sqrt(1.0 + beta * (x ** 2))
+20	
+21	    elif weight_kind == "log1p":
+22	        return 1.0 / (1.0 + beta * torch.log1p(x**weight_p))
+23	
+24	    elif weight_kind == "power_family":
+25	        return (1.0 + beta * (x ** weight_p)) ** (-weight_alpha)
+26	
+27	    elif weight_kind == "stretched_exp":
+28	        return torch.exp(- (beta * x) ** weight_kappa)
+29	
+30	    elif weight_kind == "band_pass":
+31	        # 抑制两端，只允许中间带宽更新
+32	        w_high = 1.0 / (1.0 + beta * torch.log1p(x**weight_p))
+33	        w_low = 1.0 / (1.0 + weight_alpha * torch.log1p(x**(-weight_kappa)))
+34	        return w_high * w_low
+35	
+36	    elif weight_kind == "high_cut":
+37	        # 允许中间+小端，只抑制大端（带阈值 τ）
+38	        tau = max(weight_alpha, 1e-6)
+39	        x_scaled = x / tau
+40	        return 1.0 / (1.0 + beta * (x_scaled ** weight_p))
+41	
+42	    else:
+43	        raise ValueError(
+44	            f"Unknown weight_kind='{weight_kind}'. "
+45	            f"Choose from ['exp','rational1','rational2','sqrt_rational2','log1p','power_family','stretched_exp',"
+46	            f"'band_pass','high_cut']")
+47	
+48	def compute_proj_init(
+49	    W: torch.Tensor,
+50	    cov: torch.Tensor,
+51	    r: int,
+52	    window: str = "tail",
+53	    s_ratio: float = 0.33,
+54	):
+55	    """Proj-Σ 初始化：从协方差特征分解取 V_small → 投影 W → SVD 分解为 A, B。
+56	
+57	    Args:
+58	        W: 当前合并后的权重 [d_out, d_in]
+59	        cov: 特征 Gram 矩阵 [d_in, d_in]
+60	        r: LoRA rank
+61	        window: 'tail'（最小特征值方向）或 'middle'（中间特征值方向）
+62	        s_ratio: 'middle' 窗口起始位置比例（默认 0.33）
+63	    Returns:
+64	        A_init: [r, d_in], B_init: [d_out, r], W_residual: [d_out, d_in]
+65	    """
+66	    # 协方差预处理（同 build_projection）
+67	    cov_double = cov.to(torch.float64)
+68	    cov_double = (cov_double + cov_double.t()) / 2.0
+69	    safe_eps = 1e-4
+70	    eye = torch.eye(cov_double.size(0), device=cov_double.device, dtype=torch.float64)
+71	    cov_double = cov_double + safe_eps * eye
+72	
+73	    eigvals_double, eigvecs_double = torch.linalg.eigh(cov_double)
+74	    eigvecs = eigvecs_double.to(dtype=W.dtype, device=W.device)
+75	
+76	    d = cov.size(0)
+77	    if window == "tail":
+78	        V_small = eigvecs[:, :r]                     # 最小 r 个特征向量
+79	    elif window == "middle":
+80	        s = max(1, min(int(d * s_ratio), d - r - 1))
+81	        V_small = eigvecs[:, s:s + r]                # 中间 r 个特征向量
+82	    else:
+83	        raise ValueError(f"Unknown window '{window}'. Choose from ['tail', 'middle']")
+84	
+85	    # BA_init = W @ V_small @ V_small^T
+86	    BA_init = W @ V_small @ V_small.T
+87	
+88	    # SVD 分解 → A_init, B_init
+89	    U_svd, D_svd, Vh_svd = torch.linalg.svd(BA_init, full_matrices=False)
+90	    r_eff = min(r, U_svd.size(1))                    # BA_init 的有效秩
+91	
+92	    A_init = torch.diag(D_svd[:r_eff] ** 0.5) @ Vh_svd[:r_eff, :]
+93	    B_init = U_svd[:, :r_eff] @ torch.diag(D_svd[:r_eff] ** 0.5)
+94	    W_residual = W - BA_init
+95	
+96	    # 若有效秩 < r，补零对齐
+97	    if r_eff < r:
+98	        pad_A = torch.zeros(r - r_eff, A_init.size(1), device=A_init.device, dtype=A_init.dtype)
+99	        pad_B = torch.zeros(B_init.size(0), r - r_eff, device=B_init.device, dtype=B_init.dtype)
+100	        A_init = torch.cat([A_init, pad_A], dim=0)
+101	        B_init = torch.cat([B_init, pad_B], dim=1)
+102	
+103	    return A_init, B_init, W_residual
+104	
+105	
+106	def compute_weight_svd_init(
+107	    W: torch.Tensor,
+108	    r: int,
+109	    window: str = "tail",
+110	    s_ratio: float = 0.33,
+111	):
+112	    """权重 SVD 初始化：对 W 做 SVD → 取窗口分量 → 分解为 A, B。
+113	
+114	    Args:
+115	        W: 当前合并后的权重 [d_out, d_in]
+116	        r: LoRA rank
+117	        window: 'tail'（最小奇异值，MiLoRA 风格）或 'middle'（中间奇异值，Least 风格）
+118	        s_ratio: 'middle' 窗口起始位置比例（默认 0.33）
+119	    Returns:
+120	        A_init: [r, d_in], B_init: [d_out, r], W_residual: [d_out, d_in]
+121	    """
+122	    U, D, Vh = torch.linalg.svd(W, full_matrices=False)
+123	    k = min(W.shape)
+124	
+125	    if window == "tail":
+126	        s = max(0, k - r)
+127	        U_small = U[:, s:]
+128	        D_small = D[s:]
+129	        V_small = Vh[s:, :]
+130	    elif window == "middle":
+131	        s = max(1, min(int(k * s_ratio), k - r))
+132	        U_small = U[:, s:s + r]
+133	        D_small = D[s:s + r]
+134	        V_small = Vh[s:s + r, :]
+135	    else:
+136	        raise ValueError(f"Unknown window '{window}'. Choose from ['tail', 'middle']")
+137	
+138	    r_eff = min(r, U_small.size(1))
+139	    A_init = torch.diag(D_small[:r_eff] ** 0.5) @ V_small[:r_eff, :]
+140	    B_init = U_small[:, :r_eff] @ torch.diag(D_small[:r_eff] ** 0.5)
+141	    BA_init = U_small[:, :r_eff] @ torch.diag(D_small[:r_eff]) @ V_small[:r_eff, :]
+142	    W_residual = W - BA_init
+143	
+144	    if r_eff < r:
+145	        pad_A = torch.zeros(r - r_eff, A_init.size(1), device=A_init.device, dtype=A_init.dtype)
+146	        pad_B = torch.zeros(B_init.size(0), r - r_eff, device=B_init.device, dtype=B_init.dtype)
+147	        A_init = torch.cat([A_init, pad_A], dim=0)
+148	        B_init = torch.cat([B_init, pad_B], dim=1)
+149	
+150	    return A_init, B_init, W_residual
+151	
+152	
+153	class FixedProjection(nn.Module):
+154	    def __init__(self, P: torch.Tensor):
+155	        super().__init__()
+156	        self.register_buffer("P", P)
+157	
+158	    def forward(self):
+159	        return self.P
+160	
+161	class SGPBaseLoRA(nn.Module):
+162	    def __init__(
+163	        self,
+164	        linear: nn.Linear,
+165	        r: int,
+166	        proj: nn.Module,
+167	        projection_param_mode: str = "full",
+168	        basis_rank: int = 4):
+169	
+170	        super().__init__()
+171	        self.linear = linear
+172	        self.in_features = linear.in_features
+173	        self.out_features = linear.out_features
+174	        self.r = r
+175	        self.P = proj
+176	        self.projection_param_mode = projection_param_mode
+177	        self.basis_rank = basis_rank
+178	
+179	        device = linear.weight.device
+180	        dtype = linear.weight.dtype
+181	
+182	        self.A = nn.Parameter(torch.zeros(r, self.in_features, device=device, dtype=dtype))
+183	        self.B = nn.Parameter(torch.zeros(self.out_features, r, device=device, dtype=dtype))
+184	        nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
+185	        nn.init.zeros_(self.B)
+186	
+187	        # Core-basis matrix C: [r, basis_rank]
+188	        if self.projection_param_mode == "core_basis":
+189	            self.C = nn.Parameter(torch.zeros(r, basis_rank, device=device, dtype=dtype))
+190	            nn.init.kaiming_uniform_(self.C, a=math.sqrt(5))
+191	        else:
+192	            self.register_parameter("C", None)
+193	
+194	        # Basis U buffer: [in_features, k]; k = 0 placeholder until set
+195	        self.register_buffer("basis_U", torch.zeros(self.in_features, 0, device=device, dtype=dtype))
+196	        self.basis_ready = False
+197	
+198	        if linear.bias is not None:
+199	            self.bias = linear.bias
+200	        else:
+201	            self.register_buffer("bias", None)
+202	
+203	        self.register_buffer("lora_active", torch.tensor(True, device=device))
+204	
+205	    def _compute_lora_delta(self) -> torch.Tensor:
+206	        if self.projection_param_mode == "full" or not self.basis_ready:
+207	            P_scaled = self.P()
+208	            A_eff = self.A @ P_scaled
+209	            return self.B @ A_eff
+210	        elif self.projection_param_mode == "fixed_basis":
+211	            k = min(self.basis_rank, self.B.shape[1], self.basis_U.shape[1])
+212	            return self.B[:, :k] @ self.basis_U[:, :k].T
+213	        elif self.projection_param_mode == "core_basis":
+214	            k = min(self.basis_rank, self.basis_U.shape[1])
+215	            return self.B @ self.C[:, :k] @ self.basis_U[:, :k].T
+216	        else:
+217	            raise ValueError(f"Unknown projection_param_mode: {self.projection_param_mode}")
+218	
+219	    def forward(self, x: torch.Tensor) -> torch.Tensor:
+220	        if self.lora_active:
+221	            lora_delta = self._compute_lora_delta()
+222	            adapted_weight = self.linear.weight + lora_delta
+223	            return F.linear(x, adapted_weight, self.bias)
+224	        else:
+225	           return self.linear(x)
+226	
+227	    def merge_lora_weights(self, lora_active: bool=True) -> None:
+228	        """将 LoRA 权重合并到原始权重中"""
+229	        with torch.no_grad():
+230	            delta = self._compute_lora_delta()
+231	            self.linear.weight.data.add_(delta)
+232	            nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
+233	            self.B.data.zero_()
+234	            if self.C is not None:
+235	                nn.init.kaiming_uniform_(self.C, a=math.sqrt(5))
+236	            self.lora_active = torch.tensor(lora_active)
+237	
+238	    @torch.no_grad()
+239	    def set_basis_U(self, U: torch.Tensor) -> None:
+240	        """Set the basis U buffer and mark it ready."""
+241	        self.basis_U = U.to(device=self.A.device, dtype=self.A.dtype)
+242	        self.basis_ready = True
+243	
+244	
+245	class SGPBaseDoRA(nn.Module):
+246	    def __init__(
+247	        self,
+248	        linear: nn.Linear,
+249	        r: int,
+250	        proj: nn.Module,
+251	        projection_param_mode: str = "full",
+252	        basis_rank: int = 4):
+253	        super().__init__()
+254	        self.in_features = linear.in_features
+255	        self.out_features = linear.out_features
+256	        self.r = r
+257	        self.P = proj
+258	        self.projection_param_mode = projection_param_mode
+259	        self.basis_rank = basis_rank
+260	
+261	        # LoRA 参数
+262	        self.A = nn.Parameter(torch.zeros(r, self.in_features))
+263	        self.B = nn.Parameter(torch.zeros(self.out_features, r))
+264	        nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
+265	        nn.init.zeros_(self.B)
+266	
+267	        # Core-basis matrix C: [r, basis_rank]
+268	        if self.projection_param_mode == "core_basis":
+269	            self.C = nn.Parameter(torch.zeros(r, basis_rank))
+270	            nn.init.kaiming_uniform_(self.C, a=math.sqrt(5))
+271	        else:
+272	            self.register_parameter("C", None)
+273	
+274	        # Basis U buffer: [in_features, k]; k = 0 placeholder until set
+275	        self.register_buffer("basis_U", torch.zeros(self.in_features, 0))
+276	        self.basis_ready = False
+277	
+278	        # DoRA 参数：方向 + 幅度
+279	        with torch.no_grad():
+280	            weight = linear.weight.data
+281	            weight_norm = weight.norm(p=2, dim=1, keepdim=True) + 1e-8
+282	            self.weight_directions = nn.Parameter(
+283	                weight / weight_norm, requires_grad=False)
+284	            self.magnitude = nn.Parameter(weight_norm.clone(), requires_grad=True)
+285	
+286	        if linear.bias is not None:
+287	            self.bias = linear.bias
+288	        else:
+289	            self.register_buffer("bias", None)
+290	
+291	        self.register_buffer("lora_active", torch.tensor(True))
+292	
+293	    def _compute_lora_delta(self) -> torch.Tensor:
+294	        if self.projection_param_mode == "full" or not self.basis_ready:
+295	            P_scaled = self.P()
+296	            A_eff = self.A @ P_scaled
+297	            return self.B @ A_eff
+298	        elif self.projection_param_mode == "fixed_basis":
+299	            k = min(self.basis_rank, self.B.shape[1], self.basis_U.shape[1])
+300	            return self.B[:, :k] @ self.basis_U[:, :k].T
+301	        elif self.projection_param_mode == "core_basis":
+302	            k = min(self.basis_rank, self.basis_U.shape[1])
+303	            return self.B @ self.C[:, :k] @ self.basis_U[:, :k].T
+304	        else:
+305	            raise ValueError(f"Unknown projection_param_mode: {self.projection_param_mode}")
+306	
+307	    def forward(self, x: torch.Tensor) -> torch.Tensor:
+308	        if self.lora_active:
+309	            lora_delta = self._compute_lora_delta()
+310	            adapted_weight = (self.weight_directions + lora_delta) * self.magnitude
+311	        else:
+312	            adapted_weight = self.weight_directions * self.magnitude
+313	        return F.linear(x, adapted_weight, self.bias)
+314	
+315	    def merge_lora_weights(self, lora_active: bool=True) -> None:
+316	        with torch.no_grad():
+317	            lora_delta = self._compute_lora_delta()
+318	            self.weight_directions.data.add_(lora_delta)
+319	            nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
+320	            self.B.data.zero_()
+321	            if self.C is not None:
+322	                nn.init.kaiming_uniform_(self.C, a=math.sqrt(5))
+323	            self.lora_active = torch.tensor(lora_active)
+324	
+325	    @torch.no_grad()
+326	    def set_basis_U(self, U: torch.Tensor) -> None:
+327	        """Set the basis U buffer and mark it ready."""
+328	        self.basis_U = U.to(device=self.A.device, dtype=self.A.dtype)
+329	        self.basis_ready = True
+330	
+331	class LoRACLIPVisionTransformer(nn.Module):
+332	    def __init__(
+333	        self,
+334	        clip_vision_model: nn.Module,
+335	        r: int,
+336	        lora_layer: Optional[Iterable[int]] = None,
+337	        use_soft_projection: bool = True,
+338	        weight_temp: float = 1.0,
+339	        weight_kind: str = "log1p",
+340	        weight_p: float = 1.0,
+341	        nsp_eps: float = 0.05,
+342	        nsp_weight: float = 0.02,
+343	        lora_class: type = SGPBaseDoRA,
+344	        include_norm: bool = False,
+345	        projection_param_mode: str = "full",
+346	        basis_rank: int = 4,
+347	        basis_window: str = "tail",
+348	        null_init_mode: str = "none"):
+349	
+350	        super().__init__()
+351	        assert r > 0, "LoRA rank r must be positive"
+352	        self.r = r
+353	        self.feature_dim = clip_vision_model.embeddings.patch_embedding.out_channels  #768
+354	
+355	        self.use_soft_projection = use_soft_projection
+356	        self.weight_temp = weight_temp
+357	        self.weight_kind = weight_kind
+358	        self.weight_p = weight_p
+359	
+360	        self.nsp_eps = nsp_eps
+361	        self.nsp_weight = nsp_weight
+362	
+363	        self.projection_param_mode = projection_param_mode
+364	        self.basis_rank = basis_rank
+365	        self.basis_window = basis_window
+366	        self.null_init_mode = null_init_mode
+367	
+368	        for n, p in clip_vision_model.named_parameters():
+369	            if include_norm and ("norm" in n or "layernorm" in n.lower()):
+370	                p.requires_grad_(True)
+371	            else:
+372	                p.requires_grad_(False)
+373	
+374	        self.lora_layer = list(lora_layer) if lora_layer is not None else list(range(len(clip_vision_model.encoder.layers)))
+375	        self.lora_modules = nn.ModuleDict()
+376	
+377	        # 设备和 dtype 推断
+378	        dev = clip_vision_model.embeddings.patch_embedding.weight.device
+379	        dtype = clip_vision_model.embeddings.patch_embedding.weight.dtype
+380	
+381	        def make_placeholder(d):
+382	            return FixedProjection(torch.eye(d, device=dev, dtype=dtype))
+383	
+384	        # 遍历每一层 Transformer
+385	        for idx, layer in enumerate(clip_vision_model.encoder.layers):
+386	            if idx not in self.lora_layer:
+387	                continue
+388	
+389	            # === Self-Attention Projections ===
+390	            for proj_name in ["k_proj", "v_proj", "q_proj", "out_proj"]:
+391	                linear = getattr(layer.self_attn, proj_name)
+392	                proj = make_placeholder(linear.in_features)
+393	                lora_mod = lora_class(linear, r, proj,
+394	                                      projection_param_mode=projection_param_mode,
+395	                                      basis_rank=basis_rank)
+396	                setattr(layer.self_attn, proj_name, lora_mod)
+397	                self.lora_modules[f"layer_{idx}_attn_{proj_name}"] = lora_mod
+398	
+399	            # === MLP ===
+400	            for mlp_name in ["fc1", "fc2"]:
+401	                linear = getattr(layer.mlp, mlp_name)
+402	                proj = make_placeholder(linear.in_features)
+403	                lora_mod = lora_class(linear, r, proj,
+404	                                      projection_param_mode=projection_param_mode,
+405	                                      basis_rank=basis_rank)
+406	                setattr(layer.mlp, mlp_name, lora_mod)
+407	                self.lora_modules[f"layer_{idx}_mlp_{mlp_name}"] = lora_mod
+408	
+409	        self.clip_vision_model = clip_vision_model
+410	
+411	    @torch.no_grad()
+412	    def _ensure_merged_before_rebuild(self):
+413	        self.merge_lora_weights()
+414	
+415	    @torch.no_grad()
+416	    def update_projection_matrices(self, covariances: Dict[str, torch.Tensor]) -> None:
+417	        for name, cov in covariances.items():
+418	            if name not in self.lora_modules:
+419	                continue
+420	
+421	            P = build_projection(
+422	                cov,
+423	                soft_projection=self.use_soft_projection,
+424	                weight_temp=self.weight_temp,
+425	                weight_kind=self.weight_kind,
+426	                weight_p=self.weight_p,
+427	                nsp_eps=self.nsp_eps,
+428	                nsp_weight=self.nsp_weight)
+429	
+430	            # 确保投影矩阵与 LoRA 模块在同一设备
+431	            module = self.lora_modules[name]
+432	            P = P.to(device=module.A.device, dtype=module.A.dtype)
+433	            module.P = FixedProjection(P)
+434	
+435	        # If using fixed_basis or core_basis, also update basis_U from covariances
+436	        if self.projection_param_mode in ("fixed_basis", "core_basis"):
+437	            self.set_basis_from_covariance(covariances, self.basis_rank, window=self.basis_window)
+438	
+439	    @torch.no_grad()
+440	    def set_basis_from_covariance(self, covariances: Dict[str, torch.Tensor],
+441	                                   k: int, window: str = "tail") -> None:
+442	        """Extract basis U (eigenvectors) from covariances and set them on modules."""
+443	        for name, cov in covariances.items():
+444	            if name not in self.lora_modules:
+445	                continue
+446	
+447	            module = self.lora_modules[name]
+448	
+449	            # Eigendecomposition of covariance (same preprocessing as build_projection)
+450	            cov_double = cov.to(torch.float64)
+451	            cov_double = (cov_double + cov_double.t()) / 2.0
+452	            safe_eps = 1e-4
+453	            eye = torch.eye(cov_double.size(0), device=cov_double.device, dtype=torch.float64)
+454	            cov_double = cov_double + safe_eps * eye
+455	
+456	            eigvals_double, eigvecs_double = torch.linalg.eigh(cov_double)
+457	            eigvecs = eigvecs_double.to(dtype=module.A.dtype, device=module.A.device)
+458	
+459	            d = cov.size(0)
+460	            actual_k = min(k, d)
+461	            if window == "tail":
+462	                U_basis = eigvecs[:, :actual_k]
+463	            elif window == "middle":
+464	                s = max(1, min(int(d * 0.33), d - actual_k - 1))
+465	                U_basis = eigvecs[:, s:s + actual_k]
+466	            else:
+467	                raise ValueError(f"Unknown window '{window}'. Choose from ['tail', 'middle']")
+468	
+469	            module.set_basis_U(U_basis)
+470	
+471	    @torch.no_grad()
+472	    def initialize_history_null(self, covariances: Dict[str, torch.Tensor],
+473	                                 window: str = "tail") -> None:
+474	        """LoRA-Null-style initialization: project W onto nullspace basis, init A/B from residual.
+475	
+476	        For each module:
+477	          1. Get effective weight W (linear.weight for LoRA, weight_directions*magnitude for DoRA)
+478	          2. Eigendecompose covariance -> take tail eigenvectors U_tail
+479	          3. BA_init = W @ U_tail @ U_tail.T
+480	          4. SVD of BA_init -> A_init, B_init
+481	          5. W_residual = W - BA_init
+482	          6. Update weight and set A, B
+483	        """
+484	        self._ensure_merged_before_rebuild()
+485	
+486	        for name, cov in covariances.items():
+487	            if name not in self.lora_modules:
+488	                continue
+489	
+490	            module = self.lora_modules[name]
+491	
+492	            # Get effective weight W
+493	            if hasattr(module, 'weight_directions') and hasattr(module, 'magnitude'):
+494	                # DoRA: weight = direction * magnitude
+495	                W = module.weight_directions.data * module.magnitude.data
+496	                is_dora = True
+497	            else:
+498	                W = module.linear.weight.data
+499	                is_dora = False
+500	
+501	            # Eigendecomposition of covariance
+502	            cov_double = cov.to(torch.float64)
+503	            cov_double = (cov_double + cov_double.t()) / 2.0
+504	            safe_eps = 1e-4
+505	            eye = torch.eye(cov_double.size(0), device=cov_double.device, dtype=torch.float64)
+506	            cov_double = cov_double + safe_eps * eye
+507	            eigvals_double, eigvecs_double = torch.linalg.eigh(cov_double)
+508	            eigvecs = eigvecs_double.to(dtype=W.dtype, device=W.device)
+509	
+510	            r = module.r
+511	            d = cov.size(0)
+512	            if window == "tail":
+513	                U_tail = eigvecs[:, :r]
+514	            elif window == "middle":
+515	                s = max(1, min(int(d * 0.33), d - r - 1))
+516	                U_tail = eigvecs[:, s:s + r]
+517	            else:
+518	                raise ValueError(f"Unknown window '{window}'. Choose from ['tail', 'middle']")
+519	
+520	            # BA_init = W @ U_tail @ U_tail.T
+521	            BA_init = W @ U_tail @ U_tail.T
+522	
+523	            # SVD of BA_init -> A_init, B_init
+524	            U_svd, D_svd, Vh_svd = torch.linalg.svd(BA_init, full_matrices=False)
+525	            r_eff = min(r, U_svd.size(1))
+526	
+527	            A_init = torch.diag(D_svd[:r_eff] ** 0.5) @ Vh_svd[:r_eff, :]
+528	            B_init = U_svd[:, :r_eff] @ torch.diag(D_svd[:r_eff] ** 0.5)
+529	            W_residual = W - BA_init
+530	
+531	            if r_eff < r:
+532	                pad_A = torch.zeros(r - r_eff, A_init.size(1), device=A_init.device, dtype=A_init.dtype)
+533	                pad_B = torch.zeros(B_init.size(0), r - r_eff, device=B_init.device, dtype=B_init.dtype)
+534	                A_init = torch.cat([A_init, pad_A], dim=0)
+535	                B_init = torch.cat([B_init, pad_B], dim=1)
+536	
+537	            # Write back
+538	            module.A.data.copy_(A_init)
+539	            module.B.data.copy_(B_init)
+540	
+541	            if is_dora:
+542	                # Update DoRA weight_directions and magnitude
+543	                W_residual_norm = W_residual.norm(p=2, dim=1, keepdim=True) + 1e-8
+544	                module.weight_directions.data.copy_(W_residual / W_residual_norm)
+545	                module.magnitude.data.copy_(W_residual_norm)
+546	            else:
+547	                module.linear.weight.data.copy_(W_residual)
+548	
+549	            # Handle null_init_mode: "history_init_only" sets P=I (no runtime projection)
+550	            if self.null_init_mode == "history_init_only":
+551	                d_in = module.in_features
+552	                device = module.A.device
+553	                dtype = module.A.dtype
+554	                module.P = FixedProjection(torch.eye(d_in, device=device, dtype=dtype))
+555	            # For "history_init_runtime", leave P as-is (runtime NSP active)rojection(P)
+556	
+557	    @torch.no_grad()
+558	    def initialize_adapters_from_covariance(
+559	        self,
+560	        covariances: Dict[str, torch.Tensor],
+561	        window: str = "tail",
+562	        s_ratio: float = 0.33,
+563	    ) -> None:
+564	        """Proj-Σ 初始化 LoRA 适配器，替代随机初始化。
+565	
+566	        对每层：Σ 特征分解 → 取 V_small → BA_init = W @ V_small @ V_small^T
+567	        → SVD → A_init, B_init → W' = W - BA_init → P = I（无运行时投影）
+568	
+569	        Args:
+570	            covariances: Dict[name, cov_matrix]
+571	            window: 'tail'（最小特征值）或 'middle'（中间特征值）
+572	            s_ratio: 'middle' 窗口起始位置比例
+573	        """
+574	        self._ensure_merged_before_rebuild()
+575	
+576	        for name, cov in covariances.items():
+577	            if name not in self.lora_modules:
+578	                continue
+579	
+580	            module = self.lora_modules[name]
+581	            W = module.linear.weight.data
+582	
+583	            A_init, B_init, W_residual = compute_proj_init(
+584	                W, cov, self.r, window=window, s_ratio=s_ratio)
+585	
+586	            # 写入初始化后的权重
+587	            module.linear.weight.data.copy_(W_residual)
+588	            module.A.data.copy_(A_init)
+589	            module.B.data.copy_(B_init)
+590	
+591	            # P 设为单位矩阵（无运行时投影）
+592	            d = cov.size(0)
+593	            device = module.A.device
+594	            dtype = module.A.dtype
+595	            module.P = FixedProjection(torch.eye(d, device=device, dtype=dtype))
+596	
+597	    @torch.no_grad()
+598	    def initialize_adapters_from_weight_svd(
+599	        self,
+600	        window: str = "tail",
+601	        s_ratio: float = 0.33,
+602	    ) -> None:
+603	        """SVD-W 初始化 LoRA 适配器：对当前合并权重做 SVD → 取窗口分量 → 初始化 A, B。
+604	
+605	        Args:
+606	            window: 'tail'（最小奇异值）或 'middle'（中间奇异值）
+607	            s_ratio: 'middle' 窗口起始比例
+608	        """
+609	        self._ensure_merged_before_rebuild()
+610	
+611	        for name, module in self.lora_modules.items():
+612	            W = module.linear.weight.data
+613	
+614	            A_init, B_init, W_residual = compute_weight_svd_init(
+615	                W, self.r, window=window, s_ratio=s_ratio)
+616	
+617	            module.linear.weight.data.copy_(W_residual)
+618	            module.A.data.copy_(A_init)
+619	            module.B.data.copy_(B_init)
+620	
+621	            d = W.size(1)
+622	            device = module.A.device
+623	            dtype = module.A.dtype
+624	            module.P = FixedProjection(torch.eye(d, device=device, dtype=dtype))
+625	
+626	    def regularization_loss(self) -> torch.Tensor:
+627	        return torch.tensor(0.0, device=next(self.parameters()).device)
+628	
+629	    def forward(self, pixel_values: torch.Tensor, **kwargs) -> torch.Tensor:
+630	        return self.clip_vision_model(pixel_values, kwargs)
+631	
+632	    def get_module_names(self):
+633	        return list(self.lora_modules.keys())
+634	
+635	    def finalize_without_lora(self) -> None:
+636	        self.eval()
+637	        for _, mod in self.lora_modules.items():
+638	            mod.merge_lora_weights(lora_active=False)
+639	
+640	    def merge_lora_weights(self):
+641	        for _, mod in self.lora_modules.items():
+642	            mod.merge_lora_weights()
+643	
+644	    def get_params(self):
+645	        params = []
+646	        for name, param in self.named_parameters():
+647	            if not param.requires_grad:
+648	                continue
+649	            else:
+650	                params.append(param)
+651	        return params
+652	
+653	
+654	def build_projection(
+655	    cov: torch.Tensor,
+656	    soft_projection: bool = True,
+657	    weight_temp: float = 5.0,
+658	    nsp_eps = 0.05,
+659	    nsp_weight = 0.0,
+660	    *,
+661	    weight_kind: str = "log1p",
+662	    weight_alpha: float = 0.5,
+663	    weight_p: float = 2.0,
+664	    weight_kappa: float = 2 ) -> torch.Tensor:
+665	
+666	# --- [修改点] 提升计算精度和稳定性 ---
+667	    # 1. 强制转换为 float64 (双精度)，这是解决 MKL Argument 8 错误的核心
+668	    cov_double = cov.to(torch.float64)
+669	
+670	    # 2. 检查并清理 NaN 或 Inf，防止脏数据导致崩溃
+671	    if torch.isnan(cov_double).any() or torch.isinf(cov_double).any():
+672	        cov_double = torch.nan_to_num(cov_double, nan=0.0, posinf=1.0, neginf=-1.0)
+673	
+674	    # 3. 确保矩阵绝对对称（理论上 cov 是对称的，但浮点误差会导致微小不对称，引发 eigh 报错）
+675	    cov_double = (cov_double + cov_double.t()) / 2.0
+676	
+677	    # 4. 增加正则化项 (岭系数)，将 1e-6 提高到 1e-4 以增强稳定性
+678	    safe_eps = 1e-4
+679	    cov_double = cov_double + safe_eps * torch.eye(cov_double.size(0), device=cov_double.device, dtype=torch.float64)
+680	
+681	    try:
+682	        # 5. 在双精度下进行特征值分解
+683	        eigvals_double, eigvecs_double = torch.linalg.eigh(cov_double)
+684	    except RuntimeError:
+685	        # [备选方案] 如果 GPU 分解失败，尝试在 CPU 上分解（CPU 的 MKL 库通常比 GPU 更鲁棒）
+686	        logging.warning("GPU eigh failed, falling back to CPU...")
+687	        eigvals_double, eigvecs_double = torch.linalg.eigh(cov_double.cpu())
+688	        eigvals_double = eigvals_double.to(cov.device)
+689	        eigvecs_double = eigvecs_double.to(cov.device)
+690	
+691	    # 6. 计算完成后，转回模型原本的精度（float16 或 float32）
+692	    # [修改点] 将结果从双精度转回原精度，并移回 GPU (cuda)
+693	    eigvals = eigvals_double.to(dtype=cov.dtype, device='cuda')
+694	    eigvecs = eigvecs_double.to(dtype=cov.dtype, device='cuda')
+695	    # --- [修改结束] ---
+696	    eigvals = torch.abs(eigvals)
+697	    d = cov.size(0)
+698	    sum_vals = eigvals.sum()
+699	    scale_ = d / (sum_vals + safe_eps)
+700	    eigvals = eigvals * scale_
+701	
+702	
+703	    if soft_projection:
+704	        weights = compute_weights(eigvals, weight_kind, weight_temp, weight_p, weight_alpha, weight_kappa)
+705	        max_weight = weights.max()
+706	        weights = weights / max_weight
+707	        diag_w = torch.diag(weights)
+708	        P = eigvecs @ diag_w @ eigvecs.t()
+709	    else:
+710	        eps_hard = nsp_eps
+711	        total = eigvals.sum()
+712	        cumsum = torch.cumsum(eigvals, dim=0)
+713	        ratio = cumsum / (total + 1e-12)
+714	        idx = (ratio >= eps_hard).nonzero(as_tuple=False)
+715	        m = idx[0].item() if idx.numel() > 0 else eigvals.numel()
+716	        V_keep = eigvecs[:, :m]
+717	        P = V_keep @ V_keep.t()
+718	        I = torch.eye(P.size(0), device=P.device, dtype=P.dtype)
+719	        P = (1 - nsp_weight) * P + nsp_weight * I
+720	
+721	    # [修改点] 确保返回的 P 矩阵一定在显卡上，与模型权重设备对齐
+722	    P = P.to(device='cuda')
+723	    return P
+724	
+725	
+726	class LoRACLIPTextTransformer(nn.Module):
+727	    """
+728	    CLIP 文本编码器的 LoRA 包装器（与 LoRACLIPVisionTransformer 对称）
+729	
+730	    给 CLIPTextTransformer 的 12 层 Transformer 的 attention(q/k/v/out_proj)
+731	    和 MLP(fc1/fc2) 添加 LoRA（默认 DoRA），共 72 个 LoRA 模块。
+732	    支持 NSP/SGP 零空间投影，防止文本编码器灾难性遗忘。
+733	    """
+734	
+735	    def __init__(
+736	        self,
+737	        clip_text_model: nn.Module,
+738	        r: int,
+739	        lora_layer: Optional[Iterable[int]] = None,
+740	        use_soft_projection: bool = True,
+741	        weight_temp: float = 1.0,
+742	        weight_kind: str = "log1p",
+743	        weight_p: float = 1.0,
+744	        nsp_eps: float = 0.05,
+745	        nsp_weight: float = 0.02,
+746	        lora_class: type = SGPBaseDoRA,
+747	    ):
+748	        super().__init__()
+749	        assert r > 0
+750	        self.r = r
+751	        self.use_soft_projection = use_soft_projection
+752	        self.weight_temp = weight_temp
+753	        self.weight_kind = weight_kind
+754	        self.weight_p = weight_p
+755	        self.nsp_eps = nsp_eps
+756	        self.nsp_weight = nsp_weight
+757	
+758	        for p in clip_text_model.parameters():
+759	            p.requires_grad_(False)
+760	
+761	        self.lora_layer = list(lora_layer) if lora_layer is not None else list(
+762	            range(len(clip_text_model.encoder.layers))
+763	        )
+764	        self.lora_modules = nn.ModuleDict()
+765	
+766	        dev = clip_text_model.embeddings.token_embedding.weight.device
+767	        dtype = clip_text_model.embeddings.token_embedding.weight.dtype
+768	
+769	        def make_placeholder(d):
+770	            return FixedProjection(torch.eye(d, device=dev, dtype=dtype))
+771	
+772	        for idx, layer in enumerate(clip_text_model.encoder.layers):
+773	            if idx not in self.lora_layer:
+774	                continue
+775	            for proj_name in ["k_proj", "v_proj", "q_proj", "out_proj"]:
+776	                linear = getattr(layer.self_attn, proj_name)
+777	                proj = make_placeholder(linear.in_features)
+778	                lora_mod = lora_class(linear, r, proj)
+779	                setattr(layer.self_attn, proj_name, lora_mod)
+780	                self.lora_modules[f"layer_{idx}_attn_{proj_name}"] = lora_mod
+781	            for mlp_name in ["fc1", "fc2"]:
+782	                linear = getattr(layer.mlp, mlp_name)
+783	                proj = make_placeholder(linear.in_features)
+784	                lora_mod = lora_class(linear, r, proj)
+785	                setattr(layer.mlp, mlp_name, lora_mod)
+786	                self.lora_modules[f"layer_{idx}_mlp_{mlp_name}"] = lora_mod
+787	
+788	        self.clip_text_model = clip_text_model
+789	
+790	    @torch.no_grad()
+791	    def _ensure_merged_before_rebuild(self):
+792	        self.merge_lora_weights()
+793	
+794	    def update_projection_matrices(self, covariances: Dict[str, torch.Tensor]) -> None:
+795	        self._ensure_merged_before_rebuild()
+796	        for name, cov in covariances.items():
+797	            if name not in self.lora_modules:
+798	                continue
+799	            P = build_projection(
+800	                cov,
+801	                soft_projection=self.use_soft_projection,
+802	                weight_temp=self.weight_temp,
+803	                weight_kind=self.weight_kind,
+804	                weight_p=self.weight_p,
+805	                nsp_eps=self.nsp_eps,
+806	                nsp_weight=self.nsp_weight,
+807	            )
+808	            self.lora_modules[name].P = FixedProjection(P)
+809	
+810	    def forward(self, input_ids=None, attention_mask=None, **kwargs):
+811	        return self.clip_text_model(
+812	            input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+813	
+814	    def get_module_names(self):
+815	        return list(self.lora_modules.keys())
+816	
+817	    def merge_lora_weights(self):
+818	        for mod in self.lora_modules.values():
+819	            mod.merge_lora_weights()
+820	
+821	    def get_params(self):
+822	        return [p for p in self.parameters() if p.requires_grad]

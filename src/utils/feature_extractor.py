@@ -1,14 +1,17 @@
 import torch
 from tqdm import tqdm
 
-@torch.no_grad()
-def extract_features(model, dataloader, device, normalize=True):
+@torch.inference_mode()
+def extract_features(model, dataloader, device, normalize=True, keep_on_device=False):
     """
     从数据加载器中提取特征
     Args:
         model: CLIP模型
         dataloader: 数据加载器
         device: 设备
+        normalize: 是否对特征做 L2 归一化
+        keep_on_device: 是否将特征保留在 GPU 上（避免 CPU↔GPU 往返，
+                        仅在测试集规模可控时使用）
     Returns:
         features: 提取的特征
         labels: 对应的标签
@@ -16,7 +19,7 @@ def extract_features(model, dataloader, device, normalize=True):
     model.eval()
     features = []
     labels = []
-    
+
     for images, lbls in tqdm(dataloader, desc="Extracting features"):
         images = images.to(device)
         vision_outputs = model.vision_model(images)
@@ -27,14 +30,14 @@ def extract_features(model, dataloader, device, normalize=True):
         feats = model.visual_projection(pooled)
         if normalize:
             feats = torch.nn.functional.normalize(feats, dim=-1)
-        features.append(feats.cpu())
-        labels.append(lbls.cpu())
-    
+        features.append(feats if keep_on_device else feats.cpu())
+        labels.append(lbls if keep_on_device else lbls.cpu())
+
     features = torch.cat(features)
     labels = torch.cat(labels)
     return features, labels
 
-@torch.no_grad()
+@torch.inference_mode()
 def extract_features_for_datasets(model, dataset_names, args, transform, device):
     """
     提取多个数据集的特征

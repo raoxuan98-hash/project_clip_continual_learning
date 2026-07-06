@@ -34,6 +34,7 @@ from src.utils.main_utils import (
     get_zeroshot_classifier,
     evaluate_dataset,
     batch_evaluate_datasets,
+    combine_ensemble_logits,
 )
 from utils_data import get_xtail_trainloader, get_xtail_classnames, get_transforms
 
@@ -97,6 +98,11 @@ def parse_args():
     parser.add_argument("--weight_kind", type=str, default="log1p")
     parser.add_argument("--weight_p", type=float, default=1.0,
                         help="P parameter for weight function.")
+    parser.add_argument("--lora_target_modules", type=lambda x: [m.strip() for m in x.split(',')],
+                        default="q_proj,k_proj,v_proj,out_proj,fc1,fc2",
+                        help="Comma-separated list of module names to apply LoRA to. Vision/text transformer supports q_proj,k_proj,v_proj,out_proj,fc1,fc2.")
+    parser.add_argument("--fused_qkv", action="store_true", default=False,
+                        help="将同层的 q_proj/k_proj/v_proj 融合为单个 qkv_proj 并挂载 LoRA（仅当三者同时在 target_modules 时生效）。")
 
     # 参考数据集参数（默认不使用蒸馏）
     parser.add_argument("--reference_dataset", type=str, default="flickr8k",
@@ -105,6 +111,8 @@ def parse_args():
                         help="Batch size for reference dataset.")
     parser.add_argument("--num_workers", type=int, default=4,
                         help="Number of workers for data loading.")
+    parser.add_argument("--amp", action="store_true", default=True,
+                        help="Use automatic mixed precision (AMP) during training.")
 
     # 损失函数权重参数
     parser.add_argument("--fd_weight", type=float, default=0.0,
@@ -137,6 +145,9 @@ def parse_args():
                         help="Weight for LR-RGDA classifier in ensemble.")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Temperature for zero-shot classifier.")
+    parser.add_argument("--ensemble_normalize", type=str, default="maxshift",
+                        choices=["zscore", "maxshift", "prob", "raw"],
+                        help="Normalize logits before ZS/classifier ensemble.")
 
     # LR-RGDA 构建参数
     parser.add_argument("--rgda_rank", type=int, default=32,
@@ -158,12 +169,17 @@ def parse_args():
                              "deterministic train_loader4updating path.")
 
     # LADA 分类器参数
-    parser.add_argument("--enable_lada", action='store_true', default=False,
-                        help="是否启用 LADA 分类器，与 LR-RGDA 同时评估对比。")
+    parser.add_argument("--enable_lada", action='store_true', default=True,
+                        help="是否启用 LADA 分类器，与 LR-RGDA 同时评估对比。默认启用。")
+    parser.add_argument("--disable_lada", action='store_true', default=False,
+                        help="禁用默认的 LADA 分类器评估。")
     parser.add_argument("--lada_k", type=int, default=16,
                         help="LADA 每类聚类中心数 k（默认 16）。")
     parser.add_argument("--lada_beta", type=float, default=1.0,
                         help="LADA 指数亲和变换的 β 参数（默认 1.0）。")
+    parser.add_argument("--lada_score_mode", type=str, default="exp_sum",
+                        choices=["exp_sum", "linear_sum", "linear_max"],
+                        help="LADA 主评估使用的 prototype scoring 方式。")
     parser.add_argument("--lada_alpha", type=float, default=1.0,
                         help="LADA+ZS 集成中 LADA logits 的权重（默认 1.0）。")
     parser.add_argument("--lada_train_iter", type=int, default=0,
@@ -200,6 +216,26 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="experiments/joint_classifier_replay",
                         help="结果 JSON 输出目录。")
 
+    # 分类器全面对比
+    parser.add_argument("--classifier_comparison", action='store_true', default=False,
+                        help="Run a comprehensive LR-RGDA/LADA classifier grid over "
+                             "alpha, fusion normalization, and LADA score transforms.")
+    parser.add_argument("--classifier_comparison_alpha_step", type=float, default=0.01,
+                        help="Alpha sweep step for --classifier_comparison.")
+    parser.add_argument("--classifier_comparison_fusion_modes", type=str, nargs='+',
+                        default=["raw", "maxshift", "zscore", "prob"],
+                        choices=["raw", "maxshift", "zscore", "prob"],
+                        help="Fusion normalization modes used by --classifier_comparison.")
+    parser.add_argument("--classifier_comparison_lada_score_modes", type=str, nargs='+',
+                        default=["exp_sum", "linear_sum", "linear_max"],
+                        choices=["exp_sum", "linear_sum", "linear_max"],
+                        help="LADA internal score modes used by --classifier_comparison.")
+    parser.add_argument("--transfer_safe_tolerance", type=float, default=0.5,
+                        help="Allowed OOD macro drop vs zero-shot when selecting "
+                             "best_transfer_safe configs.")
+    parser.add_argument("--alpha_sweep_batch_size", type=int, default=512,
+                        help="Chunk size for alpha/grid evaluation.")
+
     # 高斯采样正则化参数（独立于分类器构建参数）
     parser.add_argument("--sample_alpha1", type=float, default=None,
                         help="采样正则化 α1，默认沿用 rgda_alpha1。")
@@ -217,6 +253,7 @@ def parse_args():
                         help="是否微调视觉编码器（默认 False）。设为 True 则微调视觉编码器。")
 
     args = parser.parse_args()
+    args.enable_lada = bool(args.enable_lada) and not args.disable_lada
 
     # 支持 'ALL' 简写
     if len(args.id_datasets) == 1 and args.id_datasets[0].upper() == 'ALL':
@@ -233,6 +270,283 @@ def parse_args():
     logging.info(f"OOD datasets: {args.ood_datasets}")
 
     return args
+
+
+def _build_alpha_values(step, device):
+    if step <= 0 or step > 1:
+        raise ValueError("--classifier_comparison_alpha_step must be in (0, 1].")
+    n_steps = int(round(1.0 / step))
+    values = torch.linspace(0, 1.0, n_steps + 1, device=device)
+    return torch.unique(torch.round(values * 10000) / 10000)
+
+
+def _config_key(config):
+    parts = [config["classifier"]]
+    if config.get("lada_score_mode") is not None:
+        parts.append(f"score={config['lada_score_mode']}")
+    if config.get("fusion_mode") is not None:
+        parts.append(f"fusion={config['fusion_mode']}")
+    if config.get("alpha") is not None:
+        parts.append(f"alpha={config['alpha']:.4f}")
+    return "|".join(parts)
+
+
+def _evaluate_classifier_grid_split(
+    args,
+    split_name,
+    dataset_names,
+    eval_model,
+    processor,
+    all_class_names,
+    lr_rgda_classifier,
+    lada_classifier,
+    num_id_classes,
+    id_dataset_offset,
+):
+    from src.utils.feature_extractor import extract_features
+
+    alpha_values = _build_alpha_values(
+        args.classifier_comparison_alpha_step, args.device)
+    configs = {}
+    per_dataset = {}
+    macro_accumulators = {}
+
+    def add_correct(key, config, correct, total):
+        configs[key] = config
+        macro_accumulators.setdefault(key, []).append(correct / total * 100)
+        return correct / total * 100
+
+    id_zeroshot_classifier = None
+    if split_name == "id":
+        id_zeroshot_classifier = get_zeroshot_classifier(
+            eval_model, processor, all_class_names, args.device)
+
+    for d_name in dataset_names:
+        _, test_transform = get_transforms(d_name)
+        _, _, te_loader, c_names = get_xtail_trainloader(
+            root=args.root, dataset_name=d_name,
+            transform_train=None, transform_test=test_transform,
+            num_shots=args.num_shots, batch_size=args.batch_size)
+
+        features, labels = extract_features(eval_model, te_loader, args.device)
+        features = torch.nn.functional.normalize(features, dim=-1)
+        features = features.to(args.device)
+
+        if split_name == "id":
+            eval_label_offset = id_dataset_offset[d_name]
+            zeroshot_classifier = id_zeroshot_classifier
+        else:
+            eval_label_offset = num_id_classes
+            zeroshot_classifier = get_zeroshot_classifier(
+                eval_model, processor, all_class_names + c_names, args.device)
+
+        labels = (labels + eval_label_offset).to(args.device)
+        total = labels.numel()
+        dataset_correct = {}
+
+        with torch.no_grad():
+            for start in range(0, total, args.alpha_sweep_batch_size):
+                end = min(start + args.alpha_sweep_batch_size, total)
+                features_chunk = features[start:end]
+                labels_chunk = labels[start:end]
+                zs_logits = features_chunk @ zeroshot_classifier
+
+                key = "zero_shot"
+                configs[key] = {
+                    "classifier": "zero_shot",
+                    "fusion_mode": None,
+                    "alpha": None,
+                    "lada_score_mode": None,
+                }
+                dataset_correct[key] = dataset_correct.get(key, 0) + int(
+                    zs_logits.argmax(dim=1).eq(labels_chunk).sum().item())
+
+                rgda_logits = lr_rgda_classifier.forward(features_chunk)
+                key = "lr_rgda|pure"
+                configs[key] = {
+                    "classifier": "lr_rgda",
+                    "fusion_mode": None,
+                    "alpha": 1.0,
+                    "lada_score_mode": None,
+                    "pure_classifier": True,
+                }
+                dataset_correct[key] = dataset_correct.get(key, 0) + int(
+                    rgda_logits.argmax(dim=1).eq(labels_chunk).sum().item())
+
+                for fusion_mode in args.classifier_comparison_fusion_modes:
+                    for alpha in alpha_values:
+                        alpha_float = float(alpha.item())
+                        config = {
+                            "classifier": "lr_rgda",
+                            "fusion_mode": fusion_mode,
+                            "alpha": round(alpha_float, 4),
+                            "lada_score_mode": None,
+                            "pure_classifier": False,
+                        }
+                        key = _config_key(config)
+                        ens_logits = combine_ensemble_logits(
+                            zs_logits, rgda_logits, num_id_classes,
+                            alpha_float, fusion_mode)
+                        dataset_correct[key] = dataset_correct.get(key, 0) + int(
+                            ens_logits.argmax(dim=1).eq(labels_chunk).sum().item())
+                        configs[key] = config
+
+                if lada_classifier is not None:
+                    for score_mode in args.classifier_comparison_lada_score_modes:
+                        lada_classifier.set_score_mode(score_mode)
+                        lada_logits = lada_classifier(features_chunk)
+
+                        config = {
+                            "classifier": "lada",
+                            "fusion_mode": None,
+                            "alpha": 1.0,
+                            "lada_score_mode": score_mode,
+                            "pure_classifier": True,
+                        }
+                        key = _config_key(config) + "|pure"
+                        dataset_correct[key] = dataset_correct.get(key, 0) + int(
+                            lada_logits.argmax(dim=1).eq(labels_chunk).sum().item())
+                        configs[key] = config
+
+                        for fusion_mode in args.classifier_comparison_fusion_modes:
+                            for alpha in alpha_values:
+                                alpha_float = float(alpha.item())
+                                config = {
+                                    "classifier": "lada",
+                                    "fusion_mode": fusion_mode,
+                                    "alpha": round(alpha_float, 4),
+                                    "lada_score_mode": score_mode,
+                                    "pure_classifier": False,
+                                }
+                                key = _config_key(config)
+                                ens_logits = combine_ensemble_logits(
+                                    zs_logits, lada_logits, num_id_classes,
+                                    alpha_float, fusion_mode)
+                                dataset_correct[key] = dataset_correct.get(key, 0) + int(
+                                    ens_logits.argmax(dim=1).eq(labels_chunk).sum().item())
+                                configs[key] = config
+
+        dataset_result = {}
+        for key, correct in dataset_correct.items():
+            config = configs[key]
+            dataset_result[key] = add_correct(key, config, correct, total)
+        per_dataset[d_name] = dataset_result
+
+    macro = {
+        key: round(sum(values) / len(values), 4)
+        for key, values in macro_accumulators.items()
+    }
+    return {
+        "split": split_name,
+        "per_dataset": per_dataset,
+        "macro": macro,
+        "configs": configs,
+        "num_datasets": len(dataset_names),
+    }
+
+
+def build_classifier_comparison_report(
+    args,
+    stage,
+    eval_model,
+    processor,
+    all_class_names,
+    lr_rgda_classifier,
+    lada_classifier,
+    num_id_classes,
+    id_dataset_offset,
+):
+    id_grid = _evaluate_classifier_grid_split(
+        args, "id", args.id_datasets, eval_model, processor, all_class_names,
+        lr_rgda_classifier, lada_classifier, num_id_classes, id_dataset_offset)
+    ood_grid = None
+    if args.ood_datasets:
+        ood_grid = _evaluate_classifier_grid_split(
+            args, "ood", args.ood_datasets, eval_model, processor, all_class_names,
+            lr_rgda_classifier, lada_classifier, num_id_classes, id_dataset_offset)
+
+    configs = dict(id_grid["configs"])
+    if ood_grid is not None:
+        configs.update(ood_grid["configs"])
+
+    records = []
+    for key, config in configs.items():
+        id_macro = id_grid["macro"].get(key)
+        ood_macro = ood_grid["macro"].get(key) if ood_grid is not None else None
+        if id_macro is None:
+            continue
+        if ood_macro is None:
+            total_macro = id_macro
+            ood_delta = None
+        else:
+            total_macro = (
+                id_macro * id_grid["num_datasets"] +
+                ood_macro * ood_grid["num_datasets"]
+            ) / (id_grid["num_datasets"] + ood_grid["num_datasets"])
+            ood_delta = ood_macro - ood_grid["macro"].get("zero_shot", 0.0)
+        records.append({
+            "key": key,
+            **config,
+            "id_macro": id_macro,
+            "ood_macro": ood_macro,
+            "ood_delta_vs_zero_shot": None if ood_delta is None else round(ood_delta, 4),
+            "total_macro": round(total_macro, 4),
+        })
+
+    candidate_records = [r for r in records if r["classifier"] != "zero_shot"]
+    best_by_id = max(candidate_records, key=lambda r: r["id_macro"]) if candidate_records else None
+    best_transfer_safe = None
+    if ood_grid is not None and candidate_records:
+        min_ood = ood_grid["macro"]["zero_shot"] - args.transfer_safe_tolerance
+        safe_records = [
+            r for r in candidate_records
+            if r["ood_macro"] is not None and r["ood_macro"] >= min_ood
+        ]
+        if safe_records:
+            best_transfer_safe = max(safe_records, key=lambda r: r["id_macro"])
+
+    report = {
+        "stage": stage,
+        "alpha_step": args.classifier_comparison_alpha_step,
+        "fusion_modes": list(args.classifier_comparison_fusion_modes),
+        "lada_score_modes": list(args.classifier_comparison_lada_score_modes),
+        "transfer_safe_tolerance": args.transfer_safe_tolerance,
+        "zero_shot": {
+            "id_macro": id_grid["macro"].get("zero_shot"),
+            "ood_macro": None if ood_grid is None else ood_grid["macro"].get("zero_shot"),
+        },
+        "records": sorted(
+            records,
+            key=lambda r: (
+                r["classifier"],
+                str(r.get("lada_score_mode")),
+                str(r.get("fusion_mode")),
+                -1 if r.get("alpha") is None else r["alpha"],
+            ),
+        ),
+        "best_by_id": best_by_id,
+        "best_transfer_safe": best_transfer_safe,
+        "per_dataset": {
+            "id": id_grid["per_dataset"],
+            "ood": None if ood_grid is None else ood_grid["per_dataset"],
+        },
+    }
+
+    print("\n" + "=" * 110)
+    print(f"[Classifier Comparison — {stage}]")
+    print("=" * 110)
+    print(f"Zero-shot ID macro: {report['zero_shot']['id_macro']:.2f}%")
+    if report["zero_shot"]["ood_macro"] is not None:
+        print(f"Zero-shot OOD macro: {report['zero_shot']['ood_macro']:.2f}%")
+    if best_by_id is not None:
+        print("Best by ID macro:")
+        print(json.dumps(best_by_id, indent=2))
+    if best_transfer_safe is not None:
+        print("Best transfer-safe:")
+        print(json.dumps(best_transfer_safe, indent=2))
+    if lada_classifier is not None:
+        lada_classifier.set_score_mode(args.lada_score_mode)
+    return report
 
 
 def main(args):
@@ -467,12 +781,17 @@ def main(args):
             lr_rgda_classifier.fit(fit_features, fit_labels,
                                    iterations=args.rgda_train_iter, lr=args.rgda_train_lr)
 
-        if args.enable_lada:
-            lada_classifier = LADAClassifier(feature_dim=fit_features.shape[1], beta=args.lada_beta)
+        if args.enable_lada or args.classifier_comparison:
+            lada_classifier = LADAClassifier(
+                feature_dim=fit_features.shape[1],
+                beta=args.lada_beta,
+                score_mode=args.lada_score_mode,
+            )
             lada_classifier.build_from_data(fit_features, fit_labels, k=args.lada_k)
             lada_classifier.to(args.device)
             logging.info(f"LADA built: {lada_classifier.get_total_classes()} classes, "
-                         f"k={args.lada_k}, beta={args.lada_beta}")
+                         f"k={args.lada_k}, beta={args.lada_beta}, "
+                         f"score_mode={args.lada_score_mode}")
             if args.lada_train_iter > 0:
                 logging.info(f"LADA fine-tuning: {args.lada_train_iter} iters, lr={args.lada_train_lr}")
                 lada_classifier.fit(fit_features, fit_labels,
@@ -576,6 +895,7 @@ def main(args):
                 lr_rgda_classifier, lada_classifier, id_alpha_sensitivity)
 
     all_class_names = []
+    classifier_comparison_reports = []
     if tune_student and args.iterations > 0:
         # 只有在微调且蒸馏损失权重 > 0 时才加载参考数据集
         use_distillation = args.fd_weight > 0 or args.cd_weight > 0
@@ -622,8 +942,25 @@ def main(args):
             n = len(ds)
             weights.extend([1.0 / (n * num_datasets)] * n)
         sampler = WeightedRandomSampler(weights, num_samples=len(merged_dataset), replacement=True)
-        merged_loader = DataLoader(merged_dataset, batch_size=args.batch_size,
-                                   sampler=sampler, num_workers=6)
+        merged_loader = DataLoader(
+            merged_dataset, batch_size=args.batch_size,
+            sampler=sampler, num_workers=args.num_workers,
+            pin_memory=True, persistent_workers=args.num_workers > 0)
+
+        if args.classifier_comparison:
+            (frozen_id_zs_accs, frozen_id_rgda_accs, frozen_id_ens_accs,
+             frozen_id_zs_avg, frozen_id_rgda_avg, frozen_id_ens_avg,
+             frozen_id_lada_accs, frozen_id_lada_zs_accs,
+             frozen_id_lada_avg, frozen_id_lada_zs_avg,
+             frozen_id_dataset_offset, frozen_num_id_classes,
+             frozen_zeroshot_classifier, frozen_lr_rgda_classifier,
+             frozen_lada_classifier, frozen_id_alpha_sensitivity) = run_full_evaluation(
+                model, tag="Frozen")
+            classifier_comparison_reports.append(
+                build_classifier_comparison_report(
+                    args, "Frozen", model, processor, all_class_names,
+                    frozen_lr_rgda_classifier, frozen_lada_classifier,
+                    frozen_num_id_classes, frozen_id_dataset_offset))
 
         # 2b. 训练模型
         logging.info("\n=== Training (Joint Fine-tuning) ===")
@@ -662,6 +999,13 @@ def main(args):
          zeroshot_classifier, lr_rgda_classifier, lada_classifier,
          id_alpha_sensitivity) = run_full_evaluation(model, tag="Final")
 
+        if args.classifier_comparison:
+            classifier_comparison_reports.append(
+                build_classifier_comparison_report(
+                    args, "Final", model, processor, all_class_names,
+                    lr_rgda_classifier, lada_classifier,
+                    num_id_classes, id_dataset_offset))
+
     else:
         logging.info(f"\n=== Skipping Fine-tuning (tune_student={args.tune_student}, iterations={args.iterations}) ===")
         for d_name in args.id_datasets:
@@ -674,6 +1018,13 @@ def main(args):
          id_dataset_offset, num_id_classes,
          zeroshot_classifier, lr_rgda_classifier, lada_classifier,
          id_alpha_sensitivity) = run_full_evaluation(model, tag="No-tune")
+
+        if args.classifier_comparison:
+            classifier_comparison_reports.append(
+                build_classifier_comparison_report(
+                    args, "No-tune", model, processor, all_class_names,
+                    lr_rgda_classifier, lada_classifier,
+                    num_id_classes, id_dataset_offset))
 
     # ========== 4. 评估 OOD 数据集 ==========
     logging.info("\n=== Evaluating OOD Datasets (Ensemble with alpha=%.1f) ===" % args.alpha)
@@ -915,6 +1266,9 @@ def main(args):
                 (a, acc) for a, acc in id_alpha_sensitivity["lada_sweep"]
             ]
         save_results["alpha_sensitivity"] = sens_data
+
+    if classifier_comparison_reports:
+        save_results["classifier_comparison"] = classifier_comparison_reports
 
     os.makedirs(args.output_dir, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

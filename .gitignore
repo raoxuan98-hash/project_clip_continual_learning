@@ -106,7 +106,4 @@ LRRGDA_DERIVATION.md
 PROJECT_TUTORIAL.md
 PROJECT_TUTORIAL_CLASSIFIER.md
 V1_TO_V2_CHANGELOG.md
-.arbor/
-.autoresearch/
-.coordinator/
-cache_old_*/
+LADA/
