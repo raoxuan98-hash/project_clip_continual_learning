@@ -527,6 +527,9 @@ def parse_args():
                         help="LoRA alpha scaling factor. Defaults to lora_rank when None.")
     parser.add_argument("--lora_dropout", type=float, default=0.0,
                         help="LoRA dropout rate (only effective for lora_vanilla).")
+    parser.add_argument("--lora_target_modules", type=lambda x: [m.strip() for m in x.split(',')],
+                        default=["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"],
+                        help="Comma-separated LoRA target module names.")
     parser.add_argument("--lora_type", type=str, default="lora_nsp",
                         choices=["lora_vanilla", "lora_sgp", "lora_nsp"],
                         help="Type of LoRA adaptation (for backward compat).")
