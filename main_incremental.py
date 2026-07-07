@@ -616,6 +616,11 @@ def parse_args():
     # 分类器参数
     parser.add_argument("--alpha", type=float, default=0.05,
                         help="Weight for LR-RGDA classifier in ensemble (paper: 0.05).")
+    parser.add_argument("--alpha_sensitivity", action="store_true", default=True,
+                        help="Enable per-task alpha sensitivity sweep (21 points 0.0-1.0). "
+                             "Use --no-alpha_sensitivity to disable.")
+    parser.add_argument("--n_alpha_samples", type=int, default=21,
+                        help="Number of alpha points in sensitivity sweep.")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Temperature for zero-shot classifier.")
     parser.add_argument("--adaptive_ensemble", action='store_true', default=False,
@@ -1223,6 +1228,8 @@ def main(args):
                 current_num_classes, eval_label_offset,
                 lada_classifier=lada_classifier,
                 lada_alpha=args.lada_alpha,
+                alpha_sensitivity=args.alpha_sensitivity,
+                n_alpha_samples=args.n_alpha_samples,
                 eval_batch_size=args.eval_batch_size,
                 te_loader=te_loader,
                 c_names=cached_c_names,
