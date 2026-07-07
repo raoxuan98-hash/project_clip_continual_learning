@@ -51,6 +51,13 @@ from src.classifiers.lr_rgda_classifier import LRRGDAClassifier
 from src.classifiers.gaussian_statistics import build_multi_center_stats_dict
 from src.lada import LADAClassifier
 from src.utils.reference_loader import load_reference_dataset
+from src.utils.retrieval_eval import (
+    evaluate_retrieval_model,
+    load_retrieval_dataset,
+    retrieval_payload,
+    flatten_retrieval_row,
+    parse_recall_ks,
+)
 from src.utils.infinite_sampler import InfiniteSampler
 from src.utils.main_utils import (
     fix_random_seed,
@@ -707,6 +714,20 @@ def parse_args():
     parser.add_argument("--gaussian_samples_per_class", type=int, default=16,
                         help="Number of pseudo-samples per class for GMM replay.")
 
+    # 多模态检索评估参数
+    parser.add_argument("--enable_retrieval_eval", action="store_true", default=False,
+                        help="Enable image-text retrieval evaluation after each task.")
+    parser.add_argument("--retrieval_datasets", type=str, default="coco_val2014,flickr30k_hf",
+                        help="Comma-separated retrieval dataset names.")
+    parser.add_argument("--retrieval_root", type=str, default="/data1/open_datasets",
+                        help="Root directory for retrieval datasets.")
+    parser.add_argument("--retrieval_batch_size", type=int, default=128,
+                        help="Batch size for retrieval evaluation.")
+    parser.add_argument("--retrieval_recall_ks", type=str, default="1,5,10",
+                        help="Comma-separated recall@k values.")
+    parser.add_argument("--retrieval_max_images", type=int, default=0,
+                        help="Max images per retrieval dataset (0=all).")
+
     # 输出参数
     parser.add_argument("--output_dir", type=str, default="experiments",
                         help="Output directory for result JSON files.")
@@ -1230,6 +1251,42 @@ def main(args):
             metrics_lada_zs.update(i, step_accs_lada_zs)
 
         _RUN_TIMER.stop("evaluate")
+
+        # --- 2h. 多模态检索评估 ---
+        if args.enable_retrieval_eval:
+            recall_ks = parse_recall_ks(args.retrieval_recall_ks)
+            retrieval_datasets = [d.strip() for d in args.retrieval_datasets.split(",") if d.strip()]
+            if not hasattr(main, "_retrieval_datasets_cache"):
+                main._retrieval_datasets_cache = {}
+            if not hasattr(main, "_retrieval_results"):
+                main._retrieval_results = []
+
+            for ds_name in retrieval_datasets:
+                if ds_name not in main._retrieval_datasets_cache:
+                    try:
+                        ds = load_retrieval_dataset(ds_name, args.retrieval_root, args.retrieval_max_images)
+                        main._retrieval_datasets_cache[ds_name] = ds
+                    except FileNotFoundError as e:
+                        logging.warning("Skipping retrieval dataset %s: %s", ds_name, e)
+                        continue
+
+                ds = main._retrieval_datasets_cache[ds_name]
+                metrics = evaluate_retrieval_model(
+                    model, processor, ds, args.device,
+                    batch_size=args.retrieval_batch_size,
+                    text_batch_size=args.retrieval_batch_size * 2,
+                    num_workers=min(args.num_workers, 4),
+                    recall_ks=recall_ks,
+                    verbose=False,
+                )
+                payload = retrieval_payload("incremental", ds_name, metrics, step_index=i, task=task_datasets[0])
+                row = flatten_retrieval_row(payload)
+                main._retrieval_results.append(row)
+
+                i2t = row["i2t_r@1"]
+                t2i = row["t2i_r@1"]
+                print(f"[Retrieval Task {i+1} | {ds_name}] I2T R@1={i2t:.1f}  T2I R@1={t2i:.1f}")
+
         _RUN_TIMER.stop(f"task_{i+1:02d}_total")
         logging.info(_RUN_TIMER.summary())
 
@@ -1359,6 +1416,20 @@ def main(args):
 
     with open(save_path, 'w', encoding='utf-8') as f:
         json.dump(save_results, f, indent=2, ensure_ascii=False)
+
+    # 保存检索评估结果
+    if args.enable_retrieval_eval and hasattr(main, "_retrieval_results") and main._retrieval_results:
+        retrieval_file = os.path.join(output_dir, f"{stem}_retrieval.json")
+        with open(retrieval_file, 'w', encoding='utf-8') as f:
+            json.dump(main._retrieval_results, f, indent=2)
+        logging.info(f"检索评估结果已保存至: {retrieval_file}")
+
+        # 打印检索汇总
+        print("\n=== Retrieval Evaluation Summary ===")
+        for row in main._retrieval_results:
+            print(f"  Step {row['step']} | {row['task']} | {row['dataset']} | "
+                  f"I2T R@1={row['i2t_r@1']:.1f} R@5={row['i2t_r@5']:.1f} | "
+                  f"T2I R@1={row['t2i_r@1']:.1f} R@5={row['t2i_r@5']:.1f}")
 
     _RUN_TIMER.stop("total")
     logging.info(f"\n增量学习结果已保存至: {save_path}")
