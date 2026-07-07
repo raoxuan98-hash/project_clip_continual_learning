@@ -32,7 +32,7 @@
 检索评估：
     使用 --enable_retrieval_eval 开启每任务后的多模态检索评估。
     首次使用前运行 scripts/download_retrieval_datasets.sh 下载 COCO/Flickr30K 到共享路径。
-    数据集默认路径: /data1/open_datasets/ (可通过 --retrieval_root 修改)
+    数据集默认路径: /mnt/raoxuan/open_datasets/ (可通过 --retrieval_root / --retrieval_roots 修改)
 """
 
 import os
@@ -62,6 +62,7 @@ from src.utils.retrieval_eval import (
     retrieval_payload,
     flatten_retrieval_row,
     parse_recall_ks,
+    parse_retrieval_roots,
 )
 from src.utils.infinite_sampler import InfiniteSampler
 from src.utils.main_utils import (
@@ -727,11 +728,19 @@ def parse_args():
     # 多模态检索评估参数
     parser.add_argument("--enable_retrieval_eval", action="store_true", default=False,
                         help="Enable image-text retrieval evaluation after each task.")
-    parser.add_argument("--retrieval_datasets", type=str, default="flickr8k",
-                        choices=["flickr8k", "coco_val2014", "coco_val2014_hf", "flickr30k_hf", "flickr30k_cn", "mscoco_2014_5k"],
-                        help="Comma-separated retrieval dataset names (default: flickr8k, already on server).")
-    parser.add_argument("--retrieval_root", type=str, default="/mnt/open_datasets",
-                        help="Root for retrieval datasets. flickr8k is at /mnt/open_datasets/flickr8k/.")
+    parser.add_argument("--retrieval_datasets", type=str, default="mscoco_2014_5k,flickr30k_hf",
+                        help="Comma-separated retrieval dataset names: flickr8k, coco_val2014, coco_val2014_hf, "
+                             "flickr30k_hf, flickr30k_cn, mscoco_2014_5k (default: mscoco_2014_5k,flickr30k_hf).")
+    parser.add_argument("--retrieval_root", type=str, default="/mnt/raoxuan/open_datasets",
+                        help="Fallback root for retrieval datasets.")
+    parser.add_argument("--retrieval_roots", type=str,
+                        default="flickr8k=/mnt/open_datasets/flickr8k,"
+                                "coco_val2014=/mnt/raoxuan/open_datasets/coco_val2014,"
+                                "coco_val2014_hf=/mnt/raoxuan/open_datasets/coco_val2014_hf,"
+                                "flickr30k_hf=/mnt/raoxuan/open_datasets/flickr30k_hf,"
+                                "flickr30k_cn=/mnt/open_datasets/chinese-clip-eval/Flickr30k-CN,"
+                                "mscoco_2014_5k=/mnt/raoxuan/open_datasets/mscoco_2014_5k_test_hf",
+                        help="Comma-separated dataset=/path entries for per-dataset retrieval roots.")
     parser.add_argument("--retrieval_batch_size", type=int, default=128,
                         help="Batch size for retrieval evaluation.")
     parser.add_argument("--retrieval_recall_ks", type=str, default="1,5,10",
@@ -1269,18 +1278,20 @@ def main(args):
         if args.enable_retrieval_eval:
             recall_ks = parse_recall_ks(args.retrieval_recall_ks)
             retrieval_datasets = [d.strip() for d in args.retrieval_datasets.split(",") if d.strip()]
+            retrieval_roots = parse_retrieval_roots(args.retrieval_roots)
             if not hasattr(main, "_retrieval_datasets_cache"):
                 main._retrieval_datasets_cache = {}
             if not hasattr(main, "_retrieval_results"):
                 main._retrieval_results = []
 
             for ds_name in retrieval_datasets:
+                ds_root = retrieval_roots.get(ds_name, args.retrieval_root)
                 if ds_name not in main._retrieval_datasets_cache:
                     try:
-                        ds = load_retrieval_dataset(ds_name, args.retrieval_root, args.retrieval_max_images)
+                        ds = load_retrieval_dataset(ds_name, ds_root, args.retrieval_max_images)
                         main._retrieval_datasets_cache[ds_name] = ds
                     except FileNotFoundError as e:
-                        logging.warning("Skipping retrieval dataset %s: %s", ds_name, e)
+                        logging.warning("Skipping retrieval dataset %s at %s: %s", ds_name, ds_root, e)
                         continue
 
                 ds = main._retrieval_datasets_cache[ds_name]
@@ -1290,15 +1301,15 @@ def main(args):
                     text_batch_size=args.retrieval_batch_size * 2,
                     num_workers=min(args.num_workers, 4),
                     recall_ks=recall_ks,
-                    verbose=False,
                 )
-                payload = retrieval_payload("incremental", ds_name, metrics, step_index=i, task=task_datasets[0])
-                row = flatten_retrieval_row(payload)
+                row = flatten_retrieval_row(
+                    "incremental", i, task_datasets[0], ds.name,
+                    metrics, path="")
                 main._retrieval_results.append(row)
 
                 i2t = row["i2t_r@1"]
                 t2i = row["t2i_r@1"]
-                print(f"[Retrieval Task {i+1} | {ds_name}] I2T R@1={i2t:.1f}  T2I R@1={t2i:.1f}")
+                print(f"[Retrieval Task {i+1} | {ds.name}] I2T R@1={i2t:.1f}  T2I R@1={t2i:.1f}")
 
         _RUN_TIMER.stop(f"task_{i+1:02d}_total")
         logging.info(_RUN_TIMER.summary())
