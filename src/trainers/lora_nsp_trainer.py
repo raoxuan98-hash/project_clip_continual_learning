@@ -471,7 +471,8 @@ class LoRANSPTrainer:
         elif scheduler_type == "constant":
             scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
         elif scheduler_type == "cosine_with_warmup":
-            warmup_steps = int(0.1 * train_iterations)
+            warmup_ratio = getattr(self.args, "warmup_ratio", 0.1)
+            warmup_steps = int(warmup_ratio * train_iterations)
             eta_min_ratio = eta_min / max(self.args.lr, 1e-12)
             def cosine_with_warmup_lr(step):
                 if step < warmup_steps:

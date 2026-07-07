@@ -529,6 +529,8 @@ def parse_args():
     parser.add_argument("--scheduler", type=str, default="cosine_with_warmup",
                         choices=["cosine", "onecycle", "cosine_with_warmup", "linear", "constant"],
                         help="Per-step learning-rate scheduler.")
+    parser.add_argument("--warmup_ratio", type=float, default=0.1,
+                        help="Warmup ratio for cosine_with_warmup scheduler (0.0 = no warmup).")
     parser.add_argument("--optimizer", type=str, default="adamw",
                         choices=["adamw", "adam", "sgd", "adagrad", "rmsprop"],
                         help="Optimizer for LoRA/text adapter parameters.")
