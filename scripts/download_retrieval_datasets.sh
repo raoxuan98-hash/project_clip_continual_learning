@@ -8,6 +8,7 @@ ROOT="${1:-/mnt/open_datasets}"
 mkdir -p "$ROOT"
 
 export HF_ENDPOINT=https://hf-mirror.com
+export HF_DATASETS_DOWNLOAD_TIMEOUT=3600
 PYTHON=$(which python 2>/dev/null || echo "/home/raoxuan/ENTER/envs/raoxuan/bin/python")
 
 echo "=== Downloading COCO val2014 captions via HF mirror ==="
