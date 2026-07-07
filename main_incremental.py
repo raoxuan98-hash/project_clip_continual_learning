@@ -724,8 +724,9 @@ def parse_args():
                         help="Enable image-text retrieval evaluation after each task.")
     parser.add_argument("--retrieval_datasets", type=str, default="coco_val2014,flickr30k_hf",
                         help="Comma-separated retrieval dataset names.")
-    parser.add_argument("--retrieval_root", type=str, default="/mnt/open_datasets",
-                        help="Root directory for retrieval datasets (shared path).")
+    parser.add_argument("--retrieval_root", type=str, default="/home/raoxuan/data/retrieval",
+                        help="Root directory for retrieval datasets. "
+                             "Run scripts/download_retrieval_datasets.sh <path> to download.")
     parser.add_argument("--retrieval_batch_size", type=int, default=128,
                         help="Batch size for retrieval evaluation.")
     parser.add_argument("--retrieval_recall_ks", type=str, default="1,5,10",
