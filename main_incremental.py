@@ -28,6 +28,11 @@
     1. 使用 --eval_batch_size 128 或更大来加速评估阶段特征提取。
     2. 如不需要 LADA 对比，添加 --disable_lada 以节省分类器构建时间。
     3. 训练后用 scripts/evaluate_incremental_rgda_sweep_artifacts.py 做离线 alpha 扫描。
+
+检索评估：
+    使用 --enable_retrieval_eval 开启每任务后的多模态检索评估。
+    首次使用前运行 scripts/download_retrieval_datasets.sh 下载 COCO/Flickr30K 到共享路径。
+    数据集默认路径: /data1/open_datasets/ (可通过 --retrieval_root 修改)
 """
 
 import os
@@ -719,8 +724,8 @@ def parse_args():
                         help="Enable image-text retrieval evaluation after each task.")
     parser.add_argument("--retrieval_datasets", type=str, default="coco_val2014,flickr30k_hf",
                         help="Comma-separated retrieval dataset names.")
-    parser.add_argument("--retrieval_root", type=str, default="/data1/open_datasets",
-                        help="Root directory for retrieval datasets.")
+    parser.add_argument("--retrieval_root", type=str, default="/mnt/open_datasets",
+                        help="Root directory for retrieval datasets (shared path).")
     parser.add_argument("--retrieval_batch_size", type=int, default=128,
                         help="Batch size for retrieval evaluation.")
     parser.add_argument("--retrieval_recall_ks", type=str, default="1,5,10",
