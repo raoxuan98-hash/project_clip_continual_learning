@@ -727,11 +727,12 @@ def parse_args():
     # 多模态检索评估参数
     parser.add_argument("--enable_retrieval_eval", action="store_true", default=False,
                         help="Enable image-text retrieval evaluation after each task.")
-    parser.add_argument("--retrieval_datasets", type=str, default="coco_val2014,flickr30k_hf",
-                        help="Comma-separated retrieval dataset names.")
-    parser.add_argument("--retrieval_root", type=str, default="/home/raoxuan/data/retrieval",
+    parser.add_argument("--retrieval_datasets", type=str, default="flickr8k",
+                        choices=["flickr8k", "coco_val2014", "flickr30k_hf", "flickr30k_cn", "mscoco_2014_5k"],
+                        help="Comma-separated retrieval dataset names (default: flickr8k, already on server).")
+    parser.add_argument("--retrieval_root", type=str, default="/mnt/open_datasets",
                         help="Root directory for retrieval datasets. "
-                             "Run scripts/download_retrieval_datasets.sh <path> to download.")
+                             "flickr8k is at /mnt/open_datasets/flickr8k/.")
     parser.add_argument("--retrieval_batch_size", type=int, default=128,
                         help="Batch size for retrieval evaluation.")
     parser.add_argument("--retrieval_recall_ks", type=str, default="1,5,10",
