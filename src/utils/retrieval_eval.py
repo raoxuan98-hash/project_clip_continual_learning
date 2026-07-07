@@ -129,6 +129,47 @@ def load_retrieval_dataset(dataset_name, root, max_images=0):
         }
         return dataset
 
+    if dataset_name == "coco_val2014_hf":
+        data_dir = root / "coco_val2014_hf" / "data"
+        if not data_dir.is_dir():
+            raise FileNotFoundError(f"COCO HF data directory missing: {data_dir}")
+        parquet_paths = sorted(data_dir.glob("*.parquet"))
+        if not parquet_paths:
+            raise FileNotFoundError(f"No COCO HF parquet files found under {data_dir}")
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError("coco_val2014_hf loader requires pandas") from exc
+
+        samples = []
+        prompts_list = []
+        limit = int(max_images) if max_images and int(max_images) > 0 else None
+        for parquet_path in parquet_paths:
+            frame = pd.read_parquet(parquet_path, columns=["image", "sentences"])
+            for _, row in frame.iterrows():
+                image_obj = row["image"]
+                if not isinstance(image_obj, dict) or not image_obj.get("bytes"):
+                    continue
+                captions_raw = row.get("sentences")
+                if captions_raw is None:
+                    continue
+                captions = []
+                if isinstance(captions_raw, dict) and "raw" in captions_raw:
+                    captions = [str(c).strip() for c in captions_raw["raw"]]
+                elif isinstance(captions_raw, list):
+                    captions = [str(c).strip() for c in captions_raw]
+                if not captions:
+                    continue
+                samples.append({"image_bytes": image_obj["bytes"]})
+                prompts_list.append(captions)
+                if limit and len(samples) >= limit:
+                    break
+            if limit and len(samples) >= limit:
+                break
+        if not samples:
+            raise ValueError(f"No COCO HF retrieval samples found under {data_dir}")
+        return BytesCaptionRetrievalDataset("coco_val2014_hf", root, samples, prompts_list, transform, language="en")
+
     if dataset_name == "coco_val2014":
         images_dir = root / "val2014"
         ann_path = root / "annotations" / "captions_val2014.json"
