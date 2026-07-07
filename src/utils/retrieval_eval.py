@@ -241,7 +241,9 @@ def load_retrieval_dataset(dataset_name, root, max_images=0):
         data_dir = root / "data"
         if not data_dir.is_dir():
             raise FileNotFoundError(f"Flickr30K HF data directory missing: {data_dir}")
-        parquet_paths = sorted(data_dir.glob("*.parquet"))
+        parquet_paths = sorted(data_dir.glob("test-*.parquet"))
+        if not parquet_paths:
+            parquet_paths = sorted(data_dir.glob("*.parquet"))  # fallback: all files
         if not parquet_paths:
             raise FileNotFoundError(f"No Flickr30K HF parquet files found under {data_dir}")
 
