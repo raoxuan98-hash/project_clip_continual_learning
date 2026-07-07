@@ -13,8 +13,10 @@
         --num_shots 16 --batch_size 32 --iterations 800 \\
         --lora_type lora_nsp --alpha 0.05
 
-默认行为：
-    - 文本编码器仅在任务 1 训练，之后冻结 (--text_tuning_schedule freeze_after)。
+默认行为（基于 10-task 消融最佳配置，2026-07-07）：
+    - 文本编码器全程微调 (--text_tuning_schedule always)。
+    - LoRA (非 DoRA)，hard NSP，nsp_eps=0.20。
+    - mc4ft200 集成分类器 (num_centers=4, rgda_train_iter=200)。
     - 评估时零样本分类器使用 lada_hybrid 模式：已见类用各任务训练后的文本原型，
       未见类用预训练 CLIP。
     - LADA 分类器评估默认开启 (--enable_lada)。
@@ -464,7 +466,7 @@ def parse_args():
                         help="Number of shots for few-shot learning.")
     parser.add_argument("--full_shot", action="store_true", default=False,
                         help="Use full dataset instead of few-shot (overrides --num_shots).")
-    parser.add_argument("--batch_size", type=int, default=64,
+    parser.add_argument("--batch_size", type=int, default=32,
                         help="Batch size for training and testing.")
     parser.add_argument("--eval_batch_size", type=int, default=None,
                         help="Batch size used during evaluation. "
@@ -485,7 +487,7 @@ def parse_args():
                              "Each element is a single dataset name.")
 
     # 训练基础参数
-    parser.add_argument("--seed", type=int, default=42,
+    parser.add_argument("--seed", type=int, default=43,
                         help="Random seed for reproducibility.")
     parser.add_argument("--gpu", type=int, default=0,
                         help="GPU index to use (e.g., 0 for cuda:0). Sets CUDA_VISIBLE_DEVICES.")
@@ -511,7 +513,7 @@ def parse_args():
                              "Applied to cosine and cosine_with_warmup schedulers.")
     parser.add_argument("--weight_decay", type=float, default=3e-5,
                         help="Weight decay for optimizer.")
-    parser.add_argument("--scheduler", type=str, default="cosine",
+    parser.add_argument("--scheduler", type=str, default="cosine_with_warmup",
                         choices=["cosine", "onecycle", "cosine_with_warmup", "linear", "constant"],
                         help="Per-step learning-rate scheduler.")
     parser.add_argument("--optimizer", type=str, default="adamw",
@@ -534,7 +536,7 @@ def parse_args():
                         choices=["lora_vanilla", "lora_sgp", "lora_nsp"],
                         help="Type of LoRA adaptation (for backward compat).")
     parser.add_argument("--use_dora", type=lambda x: x.lower() in ('true', '1', 'yes'),
-                        default=True,
+                        default=False,
                         help="Use DoRA (SGPBaseDoRA) for lora_nsp/lora_sgp; set false for plain LoRA (SGPBaseLoRA).")
     parser.add_argument("--init_mode", type=str, default="lora_nsp",
                         choices=["lora_nsp", "lora_vanilla",
@@ -558,7 +560,7 @@ def parse_args():
     parser.add_argument("--null_init_mode", type=str, default="none",
                         choices=["none", "history_init_only", "history_init_runtime"],
                         help="LoRA-Null-style initialization mode.")
-    parser.add_argument("--nsp_eps", type=float, default=0.05,
+    parser.add_argument("--nsp_eps", type=float, default=0.20,
                         help="Epsilon parameter for NSP.")
     parser.add_argument("--nsp_weight", type=float, default=0.02,
                         help="Weight parameter for NSP.")
@@ -583,14 +585,14 @@ def parse_args():
     # 损失函数权重参数
     parser.add_argument("--fd_weight", type=float, default=1.0,
                         help="Weight for feature distillation loss (0=disabled).")
-    parser.add_argument("--cd_weight", type=float, default=1.0,
+    parser.add_argument("--cd_weight", type=float, default=2.0,
                         help="Weight for cross-modal distillation loss (0=disabled).")
     parser.add_argument("--cd_divergence", type=str, default="kl_forward",
                         choices=["kl_forward", "kl_reverse", "js", "mse", "cosine", "l1"],
                         help="Divergence form for cross-modal distillation.")
-    parser.add_argument("--cd_temperature", type=float, default=2.0,
+    parser.add_argument("--cd_temperature", type=float, default=4.0,
                         help="Temperature for cross-modal distillation soft labels.")
-    parser.add_argument("--aux_weight", type=float, default=1.0,
+    parser.add_argument("--aux_weight", type=float, default=0.0,
                         help="Weight for auxiliary linear classifier loss (0=disabled). "
                              "Adds a linear head on features during training to improve "
                              "feature separability for downstream LR-RGDA.")
@@ -624,7 +626,7 @@ def parse_args():
                         help="qda_reg_alpha2 for LR-RGDA.")
     parser.add_argument("--rgda_alpha3", type=float, default=0.5,
                         help="qda_reg_alpha3 for LR-RGDA.")
-    parser.add_argument("--rgda_train_iter", type=int, default=0,
+    parser.add_argument("--rgda_train_iter", type=int, default=200,
                         help="LR-RGDA classifier fine-tuning iterations (0=analytical only).")
     parser.add_argument("--rgda_train_lr", type=float, default=0.01,
                         help="LR-RGDA classifier fine-tuning learning rate.")
@@ -651,7 +653,7 @@ def parse_args():
                         help="Zero-shot 分类器最大类数上限（用于联合训练时的随机采样）。")
     parser.add_argument("--tune_vision_encoder", type=lambda x: x.lower() == 'true', default=True,
                         help="是否微调视觉编码器（默认 True）。设为 False 则仅微调文本编码器（text-only模式）。")
-    parser.add_argument("--text_tuning_schedule", type=str, default="freeze_after",
+    parser.add_argument("--text_tuning_schedule", type=str, default="always",
                         choices=["always", "never", "freeze_after", "low_lr_after"],
                         help="文本编码器微调调度。freeze_after=仅在任务1训练文本端，之后冻结；"
                              "low_lr_after=任务1后降低文本LR；always=始终训练；never=不训练。")
@@ -659,7 +661,7 @@ def parse_args():
                         help="切换到降低文本LR的任务编号（1-indexed）。")
     parser.add_argument("--text_lr_scale_after_task", type=float, default=0.2,
                         help="switch_task之后文本LR的缩放因子（low_lr_after模式下）。")
-    parser.add_argument("--num_centers", type=int, default=1,
+    parser.add_argument("--num_centers", type=int, default=4,
                         help="Number of k-means centers per class for multi-center LR-RGDA. 1=single-center.")
     parser.add_argument("--artifact_num_centers", type=str, default="1,4",
                         help="Comma-separated center counts whose compact LR-RGDA stats are saved in "

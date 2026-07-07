@@ -96,7 +96,7 @@ def load_reference_dataset(args, model_pretrain, processor, device,
                 torch.cat(cached_t_img_feats), torch.cat(cached_t_txt_feats),
                 tokenized=False)
         reference_loader = DataLoader(
-            merged_ref_dataset, batch_size=32,
+            merged_ref_dataset, batch_size=getattr(args, 'reference_batch_size', 32),
             sampler=InfiniteSampler(merged_ref_dataset, shuffle=True, seed=42),
             num_workers=4, pin_memory=True
         )
