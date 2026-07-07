@@ -624,6 +624,8 @@ def parse_args():
                              "Use --no-alpha_sensitivity to disable.")
     parser.add_argument("--n_alpha_samples", type=int, default=21,
                         help="Number of alpha points in sensitivity sweep.")
+    parser.add_argument("--alpha_sweep_batch_size", type=int, default=512,
+                        help="Chunk size for alpha sweep evaluation.")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Temperature for zero-shot classifier.")
     parser.add_argument("--adaptive_ensemble", action='store_true', default=False,
