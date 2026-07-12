@@ -1,0 +1,241 @@
+\section{Method}
+\label{sec:method}
+
+\subsection{Problem Formulation and Framework Overview}
+\label{sec:problem}
+
+We consider a sequence of $T$ class-incremental tasks $\{\mathcal{D}_t\}_{t=1}^{T}$. Task $t$ contains labeled samples from a class set $\mathcal{C}_t$, where $\mathcal{C}_t\cap\mathcal{C}_{t'}=\varnothing$ for $t\neq t'$. At training step $t$, the learner receives $\mathcal{D}_t$ but no raw samples from earlier tasks. At inference, it predicts over the accumulated label space $\mathcal{C}_{1:t}=\bigcup_{j=1}^{t}\mathcal{C}_j$ without task identity. We use a pre-trained CLIP model with image encoder $f_I$ and text encoder $f_T$. The framework is evaluated on both class-incremental classification and image--text retrieval; the latter is computed directly from the adapted encoders and is independent of the downstream ensemble classifier.
+
+Our framework separates three responsibilities. First, LoRA-NF uses historical layer-input statistics to reduce interference with directions important to earlier tasks. Second, cross-modal knowledge distillation explicitly anchors the image--text relations of the pre-trained model. Third, LR-RGDA and the CLIP text classifier combine supervised visual statistics with language-derived semantic priors at prediction time. After each task, the low-rank weights are merged into the backbone, the adapter factors are reinitialized, and the historical activation and class statistics are updated.
+
+\paragraph{Notation.}
+We adopt a row-vector, right-multiplication convention. For a linear layer,
+\begin{equation}
+    \mathbf{Y}=\mathbf{X}\mathbf{W},
+    \qquad
+    \mathbf{X}\in\mathbb{R}^{n\times d_{\mathrm{in}}},
+    \quad
+    \mathbf{W}\in\mathbb{R}^{d_{\mathrm{in}}\times d_{\mathrm{out}}}.
+    \label{eq:linear_right}
+\end{equation}
+The implementation uses the transposed PyTorch storage convention, but all derivations below follow Eq.~\eqref{eq:linear_right}.
+
+\subsection{LoRA-NF: Persistent Null-Space Filtering}
+\label{sec:lora_nf}
+
+Standard LoRA~\cite{hu2022lora} augments the frozen weight $\mathbf{W}_0$ by
+\begin{equation}
+    \mathbf{W}=\mathbf{W}_0+\Delta\mathbf{W},
+    \qquad
+    \Delta\mathbf{W}=\mathbf{A}\mathbf{B},
+    \label{eq:lora}
+\end{equation}
+where $\mathbf{A}\in\mathbb{R}^{d_{\mathrm{in}}\times r}$, $\mathbf{B}\in\mathbb{R}^{r\times d_{\mathrm{out}}}$, and $r\ll\min(d_{\mathrm{in}},d_{\mathrm{out}})$. The residual response is $\mathbf{X}\mathbf{A}\mathbf{B}$. Although its rank is bounded by $r$, the factor $\mathbf{A}$ may extract arbitrary input directions, including directions that carry high energy for historical tasks.
+
+\subsubsection{Historical activation spectrum}
+
+For each adapted layer, let $\mathbf{X}_t\in\mathbb{R}^{N_t\times d_{\mathrm{in}}}$ collect its flattened input activations on task $t$. We compute the uncentered second moment
+\begin{equation}
+    \mathbf{G}_t=\frac{1}{N_t}\mathbf{X}_t^\top\mathbf{X}_t,
+    \label{eq:task_gram}
+\end{equation}
+and maintain an equally weighted history over completed tasks,
+\begin{equation}
+    \overline{\mathbf{G}}_t=\frac{1}{t}\sum_{j=1}^{t}\mathbf{G}_j.
+    \label{eq:history_gram}
+\end{equation}
+This matrix is stored per layer; raw historical inputs are not retained. Let
+\begin{equation}
+    \overline{\mathbf{G}}_t
+    =\mathbf{U}\boldsymbol{\Lambda}\mathbf{U}^\top,
+    \qquad
+    0\leq\lambda_1\leq\cdots\leq\lambda_{d_{\mathrm{in}}},
+    \label{eq:history_eig}
+\end{equation}
+be its eigendecomposition. The eigenvectors associated with small eigenvalues span a low-energy subspace in which historical activations have limited response. We collect the selected eigenvectors in $\mathbf{U}_0$ and define the leaky filter
+\begin{equation}
+    \mathbf{P}
+    =(1-\rho)\mathbf{U}_0\mathbf{U}_0^\top+\rho\mathbf{I},
+    \qquad 0<\rho\leq 1.
+    \label{eq:leaky_filter}
+\end{equation}
+Thus $\mathbf{P}$ has eigenvalue $1$ on the selected low-energy subspace and $\rho$ on its complement. The first task uses $\mathbf{P}=\mathbf{I}$ because no historical activation spectrum is yet available. Soft spectral weights and strict projection are treated as variants in the ablation study; Eq.~\eqref{eq:leaky_filter} is the default LoRA-NF construction.
+
+\subsubsection{Forward-filtered low-rank adaptation}
+
+LoRA-NF inserts $\mathbf{P}$ before both trainable factors:
+\begin{equation}
+    \Delta\mathbf{W}=\mathbf{P}\mathbf{A}\mathbf{B},
+    \qquad
+    \mathbf{X}\Delta\mathbf{W}=(\mathbf{X}\mathbf{P})\mathbf{A}\mathbf{B}.
+    \label{eq:lora_nf}
+\end{equation}
+The historical filter is fixed within a task, whereas $\mathbf{A}$ and $\mathbf{B}$ remain trainable. Consequently, the low-rank factors are optimized using a filtered input in every forward pass. This differs from modifying a gradient after ordinary forward/backward computation and from encoding a null-space basis only in the initialization or constraint of $\mathbf{A}$. After learning task $t$, we merge $\mathbf{P}\mathbf{A}\mathbf{B}$ into $\mathbf{W}_0$, reinitialize $\mathbf{A}$ and $\mathbf{B}$, collect $\mathbf{G}_t$, and construct the filter for the next task. This merge-and-reset procedure prevents trainable parameters from growing with the task sequence.
+
+\subsection{Theoretical Understanding of LoRA-NF}
+\label{sec:lora_nf_theory}
+
+We next formalize three properties of the forward-filtered parameterization. The results describe a single adapted layer under the right-multiplication convention; complete proofs are provided in Appendix~\ref{app:lora_nf_proofs}.
+
+\begin{proposition}[Historical filtered response]
+\label{prop:historical_response}
+For a historical activation matrix $\mathbf{X}_h$ with second moment $\mathbf{G}_h=\mathbf{X}_h^\top\mathbf{X}_h/N_h$, the filtered input satisfies
+\begin{equation}
+    \frac{1}{N_h}\|\mathbf{X}_h\mathbf{P}\|_F^2
+    =\operatorname{tr}(\mathbf{P}^\top\mathbf{G}_h\mathbf{P}).
+    \label{eq:filtered_energy}
+\end{equation}
+If $\mathbf{P}$ and $\mathbf{G}_h$ share eigenvectors with spectral weights $p_i$, then the right-hand side equals $\sum_i p_i^2\lambda_i$. Moreover,
+\begin{equation}
+    \|\mathbf{X}_h\mathbf{P}\mathbf{A}\mathbf{B}\|_F
+    \leq \|\mathbf{X}_h\mathbf{P}\|_F\,\|\mathbf{A}\|_2\,\|\mathbf{B}\|_2.
+    \label{eq:historical_bound}
+\end{equation}
+\end{proposition}
+
+Proposition~\ref{prop:historical_response} connects the spectral filter to the response of the adapter on historical inputs. It is an interference bound rather than a guarantee of zero forgetting: the realized response also depends on the learned low-rank factors and on nonlinear interactions across layers.
+
+\begin{proposition}[Expressive equivalence under leaky filtering]
+\label{prop:expressive_equivalence}
+Let $\mathbf{P}$ be invertible. For a fixed rank budget $r$,
+\begin{equation}
+    \{\mathbf{P}\mathbf{A}\mathbf{B}:\mathbf{A}\in\mathbb{R}^{d_{\mathrm{in}}\times r},
+      \mathbf{B}\in\mathbb{R}^{r\times d_{\mathrm{out}}}\}
+    =
+    \{\mathbf{C}\mathbf{B}:\mathbf{C}\in\mathbb{R}^{d_{\mathrm{in}}\times r},
+      \mathbf{B}\in\mathbb{R}^{r\times d_{\mathrm{out}}}\}.
+    \label{eq:expressive_set}
+\end{equation}
+\end{proposition}
+
+Because $\rho>0$ makes Eq.~\eqref{eq:leaky_filter} invertible, LoRA-NF does not obtain historical protection by shrinking the function class of rank-matched LoRA. The strict projection limit $\rho=0$ is excluded from this result.
+
+\begin{proposition}[Spectrum-dependent optimization geometry]
+\label{prop:optimization_geometry}
+Define the effective input-side factor $\mathbf{C}=\mathbf{P}\mathbf{A}$ and suppose that $\mathbf{A}$ is updated by gradient descent with step size $\eta$ while $\mathbf{P}$ is fixed. Then
+\begin{equation}
+    \mathbf{C}^{+}
+    =\mathbf{C}-\eta\mathbf{P}\mathbf{P}^\top\nabla_{\mathbf{C}}\mathcal{L}.
+    \label{eq:optimization_geometry}
+\end{equation}
+For symmetric $\mathbf{P}$, the induced preconditioner is $\mathbf{P}^2$.
+\end{proposition}
+
+Equation~\eqref{eq:optimization_geometry} shows that the persistent filter changes the speed of effective learning along different historical eigendirections even though the expressive set is unchanged. For the leaky filter, directions outside the selected low-energy subspace receive a factor $\rho^2$. The statement is exact for gradient descent on $\mathbf{A}$; adaptive-optimizer dynamics are discussed separately and are not claimed to be identical.
+
+\subsection{Cross-Modal Knowledge Distillation}
+\label{sec:distillation}
+
+LoRA-NF controls interference measured by historical activations, but it does not explicitly preserve CLIP's image--text alignment. We therefore use a frozen pre-trained CLIP model as teacher on a reference set of image--text pairs. Let $\mathbf{v}_i^T,\mathbf{t}_i^T$ denote normalized teacher features and $\mathbf{v}_i^S,\mathbf{t}_i^S$ the corresponding student features. Feature distillation anchors the visual representation through
+\begin{equation}
+    \mathcal{L}_{\mathrm{FD}}
+    =\frac{1}{N}\sum_{i=1}^{N}\left(1-(\mathbf{v}_i^T)^\top\mathbf{v}_i^S\right).
+    \label{eq:fd}
+\end{equation}
+To preserve relational image--text structure, we form temperature-scaled teacher and student distributions
+\begin{equation}
+    q_{ij}^{T}=\operatorname{softmax}_{j}\!\left(
+      \frac{\exp(\gamma)(\mathbf{v}_i^T)^\top\mathbf{t}_j^T}{\tau}\right),
+    \qquad
+    q_{ij}^{S}=\operatorname{softmax}_{j}\!\left(
+      \frac{\exp(\gamma)(\mathbf{v}_i^S)^\top\mathbf{t}_j^S}{\tau}\right),
+    \label{eq:cross_modal_probs}
+\end{equation}
+where $\gamma$ is CLIP's logit-scale parameter. The default cross-modal distillation loss is the forward KL divergence
+\begin{equation}
+    \mathcal{L}_{\mathrm{CD}}
+    =\frac{\tau^2}{N}\sum_{i=1}^{N}
+      D_{\mathrm{KL}}(\mathbf{q}_i^T\,\|\,\mathbf{q}_i^S).
+    \label{eq:cd}
+\end{equation}
+The complete training objective is
+\begin{equation}
+    \mathcal{L}
+    =\mathcal{L}_{\mathrm{CE}}
+    +\lambda_{\mathrm{FD}}\mathcal{L}_{\mathrm{FD}}
+    +\lambda_{\mathrm{CD}}\mathcal{L}_{\mathrm{CD}}.
+    \label{eq:training_objective}
+\end{equation}
+This separation is important: LoRA-NF primarily protects historical task directions, whereas cross-modal distillation is the mechanism directly responsible for maintaining image--text relations and is evaluated through retrieval.
+
+\subsection{Distributional Ensemble Prediction}
+\label{sec:ensemble}
+
+After task $t$, we summarize each observed class $c\in\mathcal{C}_{1:t}$ by its feature mean $\boldsymbol{\mu}_c$ and covariance $\mathbf{\Sigma}_c$ in the adapted visual space. Few-shot class covariances are regularized as
+\begin{equation}
+    \mathbf{\Sigma}_c^{\mathrm{reg}}
+    =\alpha_1\mathbf{\Sigma}_c
+    +\alpha_2\mathbf{\Sigma}_{\mathrm{avg}}
+    +\alpha_3\mathbf{I},
+    \label{eq:cov_reg}
+\end{equation}
+where $\mathbf{\Sigma}_{\mathrm{avg}}$ is the dataset-balanced global covariance. The Gaussian discriminant score is
+\begin{equation}
+    g_c^{\mathrm{RGDA}}(\mathbf{z})
+    =-\frac{1}{2}(\mathbf{z}-\boldsymbol{\mu}_c)^\top
+      (\mathbf{\Sigma}_c^{\mathrm{reg}})^{-1}
+      (\mathbf{z}-\boldsymbol{\mu}_c)
+      -\frac{1}{2}\log|\mathbf{\Sigma}_c^{\mathrm{reg}}|+\log\pi_c.
+    \label{eq:rgda}
+\end{equation}
+
+To retain class-specific structure without full quadratic cost, LR-RGDA represents the regularized covariance as
+\begin{equation}
+    \mathbf{\Sigma}_c^{\mathrm{reg}}
+    =\mathbf{B}+\mathbf{U}_c\boldsymbol{\Lambda}_c\mathbf{U}_c^\top,
+    \label{eq:lr_cov}
+\end{equation}
+where $\mathbf{B}=\alpha_2\mathbf{\Sigma}_{\mathrm{avg}}+\alpha_3\mathbf{I}$ is shared and $\mathbf{U}_c\boldsymbol{\Lambda}_c\mathbf{U}_c^\top$ is a rank-$r_g$ class-specific correction. Applying the Woodbury identity yields
+\begin{equation}
+    (\mathbf{\Sigma}_c^{\mathrm{reg}})^{-1}
+    =\mathbf{B}^{-1}-\mathbf{B}^{-1}\mathbf{U}_c
+      (\boldsymbol{\Lambda}_c^{-1}+\mathbf{U}_c^\top\mathbf{B}^{-1}\mathbf{U}_c)^{-1}
+      \mathbf{U}_c^\top\mathbf{B}^{-1},
+    \label{eq:woodbury}
+\end{equation}
+which decomposes the discriminant into a shared affine term and a class-specific low-rank quadratic correction. The full derivation and complexity analysis are provided in Appendices~\ref{app:lr_rgda_derivation} and~\ref{app:complexity}.
+
+For completeness, define
+\begin{equation}
+    \mathbf{M}_c
+    =\boldsymbol{\Lambda}_c^{-1}
+    +\mathbf{U}_c^\top\mathbf{B}^{-1}\mathbf{U}_c.
+\end{equation}
+After dropping the class-independent quadratic term, the LR-RGDA score can be written as
+\begin{equation}
+    g_c^{\mathrm{LR\text{-}RGDA}}(\mathbf{z})
+    =\mathbf{w}_c^\top\mathbf{z}+b_c+\mathbf{z}^\top\mathbf{Q}_c\mathbf{z},
+    \label{eq:lr_rgda}
+\end{equation}
+where
+\begin{align}
+    \mathbf{w}_c
+    &=\mathbf{B}^{-1}\boldsymbol{\mu}_c
+      -\mathbf{B}^{-1}\mathbf{U}_c\mathbf{M}_c^{-1}
+       \mathbf{U}_c^\top\mathbf{B}^{-1}\boldsymbol{\mu}_c,
+       \label{eq:wc}\\
+    b_c
+    &=-\frac{1}{2}\boldsymbol{\mu}_c^\top\mathbf{B}^{-1}\boldsymbol{\mu}_c
+      +\frac{1}{2}\boldsymbol{\mu}_c^\top\mathbf{B}^{-1}\mathbf{U}_c
+       \mathbf{M}_c^{-1}\mathbf{U}_c^\top\mathbf{B}^{-1}\boldsymbol{\mu}_c
+      -\frac{1}{2}\log|\mathbf{\Sigma}_c^{\mathrm{reg}}|+\log\pi_c,
+      \label{eq:bc}\\
+    \mathbf{Q}_c
+    &=\frac{1}{2}\mathbf{B}^{-1}\mathbf{U}_c\mathbf{M}_c^{-1}
+      \mathbf{U}_c^\top\mathbf{B}^{-1}.
+      \label{eq:qc}
+\end{align}
+
+Let $s_c^{\mathrm{text}}(\mathbf{x})$ be the CLIP text-classifier logit and $s_c^{\mathrm{GDA}}(\mathbf{x})$ the LR-RGDA logit for an observed class. We first max-shift the two branches independently, producing $\widetilde{s}^{\mathrm{text}}$ and $\widetilde{s}^{\mathrm{GDA}}$. The ensemble uses
+\begin{equation}
+    s_c^{\mathrm{ens}}(\mathbf{x})=
+    \begin{cases}
+      (1-\alpha)\widetilde{s}_c^{\mathrm{text}}(\mathbf{x})
+      +\alpha\widetilde{s}_c^{\mathrm{GDA}}(\mathbf{x}),
+      & c\in\mathcal{C}_{1:t},\\
+      (1-\alpha)\widetilde{s}_c^{\mathrm{text}}(\mathbf{x}),
+      & c\notin\mathcal{C}_{1:t}.
+    \end{cases}
+    \label{eq:ensemble}
+\end{equation}
+The text branch can use cached adapted prototypes for observed classes and frozen CLIP prototypes for unobserved classes; we refer to it generically as the \emph{CLIP text classifier}. LR-RGDA changes only the classification decision and has no role in image--text retrieval.

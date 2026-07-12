@@ -1,0 +1,39 @@
+\section{Proofs for LoRA-NF}
+\label{app:lora_nf_proofs}
+
+\subsection{Proof of Proposition~\ref{prop:historical_response}}
+
+Using the definition of the Frobenius norm and cyclic invariance of the trace,
+\begin{align}
+    \frac{1}{N_h}\|\mathbf{X}_h\mathbf{P}\|_F^2
+    &=\frac{1}{N_h}\operatorname{tr}
+      (\mathbf{P}^\top\mathbf{X}_h^\top\mathbf{X}_h\mathbf{P})\\
+    &=\operatorname{tr}(\mathbf{P}^\top\mathbf{G}_h\mathbf{P}).
+\end{align}
+When $\mathbf{P}=\mathbf{U}\operatorname{diag}(p_i)\mathbf{U}^\top$ and
+$\mathbf{G}_h=\mathbf{U}\operatorname{diag}(\lambda_i)\mathbf{U}^\top$, the trace reduces to $\sum_i p_i^2\lambda_i$. The second statement follows from submultiplicativity:
+\begin{equation}
+    \|\mathbf{X}_h\mathbf{P}\mathbf{A}\mathbf{B}\|_F
+    \leq\|\mathbf{X}_h\mathbf{P}\|_F\|\mathbf{A}\|_2\|\mathbf{B}\|_2.
+\end{equation}
+
+\subsection{Proof of Proposition~\ref{prop:expressive_equivalence}}
+
+For any LoRA-NF update, define $\mathbf{C}=\mathbf{P}\mathbf{A}$; then
+$\mathbf{P}\mathbf{A}\mathbf{B}=\mathbf{C}\mathbf{B}$, proving inclusion in the rank-matched LoRA set. Conversely, for any $\mathbf{C}\mathbf{B}$, invertibility of $\mathbf{P}$ permits $\mathbf{A}=\mathbf{P}^{-1}\mathbf{C}$, for which $\mathbf{P}\mathbf{A}\mathbf{B}=\mathbf{C}\mathbf{B}$. The two sets are therefore equal. For Eq.~\eqref{eq:leaky_filter}, the eigenvalues of $\mathbf{P}$ are $1$ and $\rho$; hence $\rho>0$ is sufficient for invertibility.
+
+\subsection{Proof of Proposition~\ref{prop:optimization_geometry}}
+
+Because $\mathbf{C}=\mathbf{P}\mathbf{A}$ and $\mathbf{P}$ is fixed,
+\begin{equation}
+    \nabla_{\mathbf{A}}\mathcal{L}
+    =\mathbf{P}^\top\nabla_{\mathbf{C}}\mathcal{L}.
+\end{equation}
+A gradient-descent step on $\mathbf{A}$ gives
+\begin{align}
+    \mathbf{C}^{+}
+    &=\mathbf{P}\left(\mathbf{A}-\eta\nabla_{\mathbf{A}}\mathcal{L}\right)\\
+    &=\mathbf{C}-\eta\mathbf{P}\mathbf{P}^\top
+      \nabla_{\mathbf{C}}\mathcal{L}.
+\end{align}
+If $\mathbf{P}$ is symmetric, $\mathbf{P}\mathbf{P}^\top=\mathbf{P}^2$. This result concerns the induced geometry of gradient descent; adaptive optimizers additionally transform the parameter-space gradients through their moment estimates.

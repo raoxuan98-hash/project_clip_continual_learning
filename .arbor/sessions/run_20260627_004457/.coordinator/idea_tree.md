@@ -1,5 +1,0 @@
-# Idea Tree
-
-**Baseline**: N/A | **Trunk**: N/A
-
-## ROOT: Phase 1: Verify the 4 key experiments at 800-iter/16-shot/seed=42 on aircraft caltech101 dtd eurosat. These are a 2x2 grid: (baseline=current_nsp, best=hist_null_init_only) x (vision_only: fd=cd=0, full_recipe: fd=cd=1.0). Use main_incremental.py with --lora_type lora_nsp --classifier_feature_transform test --batch_size 64. Output to experiments/null_basis_ablation/iter800/. For parallel execution, assign each experiment to a different GPU with --gpu flag. After verifying these results, Phase 2: Autonomously research and experiment to improve continual learning performance beyond current baseline. You have the full codebase at src/ (LoRA variants in lora_sgp.py, trainers, classifiers, distillation losses), configs/, and data at /data1/open_datasets/X-TAIL. Explore ideas like: tuning text encoder schedules, adjusting distillation weights, trying different LoRA ranks, experimenting with auxiliary loss configurations, testing different projection/basis setups, or any other promising direction. Your goal is to maximize Ensemble Average on B_dev (aircraft caltech101 dtd) and B_test (add eurosat). [DONE]

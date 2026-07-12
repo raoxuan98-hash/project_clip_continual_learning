@@ -891,14 +891,17 @@ ssh raoxuan@10.20.34.30 \
 | 1 | Pre-Wave A | backbone × text_schedule 全交叉 | 6 | ✅ 完成 | LoRA > DoRA, always 最优 |
 | 2 | 代码修复 | parser cd_temperature/cd_divergence/scheduler | — | ✅ 完成 | commit 710ee34 |
 | 3 | Phase 1 | 种子方差 + Wave A lr sweep | 4 | ✅ 完成 | lr=1e-4 winner, σ_seed≈0.5pp, Ens L=83.65 |
-| 4 | Phase 2 | Wave C (batch size) | 3 | ⏳ 待启动 | — |
-| 5 | Phase 3 | Wave D (CD 温度) | 3 | ⬜ 未开始 | — |
-| 6 | Phase 4 | Wave F (text schedule 验证) | 4 | ⬜ 未开始 | — |
-| 7 | Phase 5 | 汇总 (Waves C/D/F) | — | ⬜ 未开始 | — |
-| 8 | Phase 6 | Soft vs Hard NSP | 2 | ⬜ 未开始 | — |
-| 9 | Phase 7 | NSP 超参数 (nsp_eps 或 nsp_weight) | 4–5 | ⬜ 未开始 | — |
-| 10 | Phase 8 | eta_min 退火搜索 | 4 | ⬜ 未开始 | ✅ 代码已修复 |
-| 11 | Phase 9 | 最终汇总 (全部) | — | ⬜ 未开始 | — |
+| 4 | Phase 2 | Wave C (batch size) | 3 | ⚠️ 完成 | bs=32 winner (ZS valid, Ens 缺 mc4ft200) |
+| 5 | Phase 3 | Wave D (CD 温度) | 3 | ⚠️ 完成 | temp=4.0 winner (ZS valid, Ens 缺 mc4ft200) |
+| 6 | Phase 4 | Wave F (text schedule 验证) | 4 | ⚠️ 完成 | always 确认最优 (ZS valid, Ens 缺 mc4ft200) |
+| 7 | Phase 6 | Soft vs Hard NSP | 2 | ✅ 完成 | ZS 平局, 保持 hard NSP |
+| 8 | Phase 7a | Soft NSP nsp_weight sweep | 4 | 🔄 运行中 | — |
+| 9 | Phase 7b | Hard NSP nsp_eps sweep | 4+1 | ✅ 完成 | eps=0.20 winner; +0.40 pending |
+| 10 | Phase 8 | eta_min 退火搜索 | 4 | 🔄 运行中 | — |
+| 11 | Phase 9 | 蒸馏参考集比例 (ref_bs) | 4 | ⬜ 未开始 | 1:1→2:1→1:2→1:4 |
+| 12 | Phase 10 | 最终汇总 (全部) | — | ⬜ 未开始 | — |
+
+**⚠️ mc4ft200 bug**: Phase 2–4 使用 `launch_waves_b_f.sh` 启动，该脚本缺少 `--num_centers 4 --rgda_train_iter 200`，导致 Ensemble 基于弱分类器（< mc4ft200 ~2pp）。ZS 指标不受影响，排名方向正确。脚本已在 7/7 修复。
 
 **已砍**: Wave B (optimizer, 6-task 差异 <0.1pp), Wave E (aux_weight, 6-task 不敏感)
 
@@ -933,7 +936,16 @@ Soft NSP 的理论优势：不硬性截断子空间，对特征值估计噪声�
 
 **公共配置**：LoRA+NSP, text=always, winner_lr, winner_bs, winner_temp, winner_aux, cosine_with_warmup, cd=2.0, mc4ft200, seed=43。
 
-**决策**：ZS Average 排序。若 soft 领先 >0.3pp → 切到 soft，Phase 7 中扫 soft 的 nsp_weight；否则保持 hard，Phase 7 扫 hard 的 nsp_eps。
+**决策**：**仅用 ZS Average**（Ensemble 受 mc4ft200 有无混淆，不可对比）。若 soft ZS A 领先 hard >0.3pp → 切到 soft；否则保持 hard。
+
+### 19.3 结果 (7/7)
+
+| 模式 | mc4ft200 | ZS A | Ens A | Ens L |
+|------|:---:|:---:|:---:|:---:|
+| hard NSP | ❌ | **69.91** | 70.67 | 81.30 |
+| soft NSP | ✅ | 69.82 | 71.64 | 83.60 |
+
+ZS A 差 0.09pp（<0.3pp），本质平局。Ens 差异来自 mc4ft200 不统一。**保持 hard NSP**（更简单，无额外参数）。
 
 ---
 
@@ -941,25 +953,9 @@ Soft NSP 的理论优势：不硬性截断子空间，对特征值估计噪声�
 
 ### 20.1 目标
 
-在 Phase 6 选出的 NSP 模式下，消融关键超参数。
+Phase 6 在 ZS 上硬/软无差异，但两份 sweep 仍值得做——看硬 nsp_eps 和软 nsp_weight 各自的最优值及敏感性。
 
-### 20.2 场景 A: Hard NSP 胜出 → 扫 nsp_eps
-
-`nsp_eps` 控制保留子空间维度 m。eps 越小 → m 越大 → 约束越强（更多方向被保护）。
-
-| # | nsp_eps | 预期 m (d=768) |
-|---|:---:|:---:|
-| 1 | 0.02 | ~200-400 |
-| 2 | 0.05 | ~100-200 (当前默认) |
-| 3 | 0.08 | ~50-150 |
-| 4 | 0.12 | ~30-100 |
-| 5 | 0.20 | ~10-80 |
-
-5 个实验，并行于 4 GPU（两轮：4+1）。
-
-### 20.3 场景 B: Soft NSP 胜出 → 扫 nsp_weight
-
-`nsp_weight` (β) 控制软投影强度。越大 → 约束越强。
+### 20.2 Phase 7a: Soft NSP nsp_weight sweep ← 运行中
 
 | # | nsp_weight |
 |---|:---:|
@@ -968,11 +964,27 @@ Soft NSP 的理论优势：不硬性截断子空间，对特征值估计噪声�
 | 3 | 0.02 (当前默认) |
 | 4 | 0.05 |
 
-4 个实验，1 轮 4 GPU。
+4 实验，1 轮 4 GPU。**仅用 ZS Average 评估**。
+
+### 20.3 Phase 7b: Hard NSP nsp_eps sweep
+
+| # | nsp_eps | 预期 m (d=768) |
+|---|:---:|:---:|
+| 1 | 0.02 | ~200-400 |
+| 2 | 0.05 | ~100-200 (当前默认) |
+| 3 | 0.08 | ~50-150 |
+| 4 | 0.12 | ~30-100 |
+| 5 | 0.20 | ~10-80 |
+| 6 | 0.40 | ~5-40 |
+
+5 实验（eps=0.05 复用 baseline），4 GPU 一轮。**仅用 ZS Average 评估**。若 eps=0.40 ZS A 继续上升 → 追加 eps=0.60。
 
 ### 20.4 决策
 
-ZS Average 排序，选出最优 nsp_eps 或 nsp_weight。
+综合分析 Phase 6 + 7a + 7b：
+- 若 hard 最优 nsp_eps 的 ZS A 显著 > soft 最优 nsp_weight → hard NSP + 该 eps
+- 若 soft 最优 nsp_weight 的 ZS A 显著 > hard 最优 nsp_eps → soft NSP + 该 weight
+- 若平局（<0.3pp）→ 保持 hard NSP（简单性优先）
 
 ---
 
@@ -1014,7 +1026,34 @@ ZS Average 排序。若最优 eta_min ≠ 0.0 → 更新公共配置。若全部
 
 ---
 
-## 22. 最终汇总 (Phase 9)
+## 22. Phase 9: 蒸馏参考集比例 (reference_batch_size)
+
+### 22.1 背景
+
+当前蒸馏使用 Flickr8K 作为参考数据集。每个训练 step 取 1 个参考 batch，`reference_batch_size` 默认 32。训练 batch_size 当前为 32，即训练样本:参考样本 = **1:1**。
+
+增大参考 batch 意味着每步有更多参考样本用于计算 FD + CD 蒸馏损失，可能加强对预训练知识的保护；减小则放松约束，允许更多任务适配。
+
+### 22.2 实验
+
+在最佳配置（hard NSP + nsp_eps=0.20 + 其他最佳）上扫：
+
+| # | reference_batch_size | 训练:参考比例 | 含义 |
+|---|:---:|:---:|------|
+| 1 | 16 | 2:1 | 弱蒸馏 |
+| 2 | 32 | 1:1 | 当前默认 |
+| 3 | 64 | 1:2 | 强蒸馏 |
+| 4 | 128 | 1:4 | 极强蒸馏 |
+
+4 实验，1 轮 4 GPU。
+
+### 22.3 决策
+
+ZS Average 排序。若最优 ≠ 32 → 更新公共配置。
+
+---
+
+## 23. 最终汇总 (Phase 10)
 
 完整实验表 + 最终推荐配置 + σ_seed + 与 82.79 对标 + NSP/EtaMin 发现。
 

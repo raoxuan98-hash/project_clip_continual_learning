@@ -36,7 +36,7 @@ from src.utils.main_utils import (
     batch_evaluate_datasets,
     combine_ensemble_logits,
 )
-from utils_data import get_xtail_trainloader, get_xtail_classnames, get_transforms
+from src.utils.data import get_xtail_trainloader, get_xtail_classnames, get_transforms
 
 
 # X-TAIL 全部 10 个数据集（LADA 论文协议）

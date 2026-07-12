@@ -11,7 +11,7 @@ fi
 
 PROJECT=/home/raoxuan/projects/project_clip_continual_learning
 PYTHON=/home/raoxuan/ENTER/envs/raoxuan/bin/python
-LOGDIR="$PROJECT/logs/10task_reablation"
+LOGDIR="$PROJECT/artifacts/logs/10task_reablation"
 OUTDIR="$PROJECT/experiments/10task_reablation"
 mkdir -p "$LOGDIR" "$OUTDIR"
 

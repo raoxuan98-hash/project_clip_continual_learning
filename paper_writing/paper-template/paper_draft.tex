@@ -16,12 +16,12 @@
 \newtheorem{proposition}[theorem]{Proposition}
 \newtheorem{corollary}[theorem]{Corollary}
 \newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
 % TODO tracking: search for \todo{} to find all placeholders
 \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
 
-\title{Null-Space Parameterized Low-Rank Adaptation\\
-with Statistical Replay Classifiers\\
-for Scalable CLIP Continual Learning}
+\title{Null-Space Filtered Low-Rank Adaptation\\
+for CLIP Class-Incremental Learning}
 
 \author{%
 Xuan Rao$^1$, Yong Zeng$^2$, Bo Zhao$^1$, Derong Liu$^3$, and Cesare Alippi$^{4,5}$\\
@@ -40,10 +40,14 @@ $^5$Faculty of Informatics, Universit\`{a} della Svizzera Italiana, Lugano 6900,
 \maketitle
 
 \begin{abstract}
-Continual learning with vision-language models like CLIP offers a pathway toward scalable machine learning systems by leveraging transferable representations. However, adapting CLIP to downstream tasks while preserving its zero-shot transfer ability remains challenging. Existing methods primarily focus on either the training phase or the inference phase independently, overlooking the potential synergies between representation adaptation and classifier construction. In this paper, we study a two-stage framework for CLIP continual learning. At the training stage, we introduce LoRA-NSP (Low-Rank Adaptation with Null Space Parameterization), establishing a theoretical connection between null space projection (NSP) and low-rank adaptation (LoRA). We show that NSP can be viewed as a restricted form of LoRA with limited plasticity, and propose a soft forward-pass projection mechanism that preserves all eigendirections while biasing updates away from high-energy historical subspaces. At the inference stage, we study LR-RGDA (Low-Rank Regularized Gaussian Discriminant Analysis), a regularized Gaussian discriminant classifier that uses low-rank covariance structure and the Woodbury matrix identity to reduce classifier cost. We further combine LR-RGDA with the zero-shot classifier and evaluate when this inference-time classifier is competitive with label-memory baselines such as LADA. Our current evidence suggests that the most promising regime is lightweight statistical replay, where historical real features are replaced by compact class statistics rather than stored explicitly.
+Continually adapting CLIP to new classes can improve downstream discrimination while interfering with historical task directions and eroding the image--text relations acquired during pre-training. Standard low-rank adaptation limits the rank of an update but does not control the historical input directions along which adaptation occurs. We introduce \emph{LoRA-NF}, a low-rank adaptation method with persistent null-space filtering. LoRA-NF inserts a history-induced filter before both trainable low-rank factors, so that the adapter learns from attenuated historical high-energy directions throughout optimization. A leaky construction retains an adaptation path in every direction while biasing learning toward the approximate null space. We complement this historical-task protection with cross-modal knowledge distillation, which explicitly preserves image--text relations on reference pairs. At prediction time, a low-rank regularized Gaussian discriminant classifier is combined with the CLIP text classifier to integrate supervised visual statistics with language-derived semantic priors. We evaluate the resulting framework on class-incremental classification and image--text retrieval, separating the roles of forward filtering, cross-modal distillation, and ensemble prediction. \todo{Insert verified headline classification and retrieval results.}
 \end{abstract}
 
 %==============================================================================
+\input{sections/introduction}
+\input{sections/related_work}
+\input{sections/method}
+\iffalse
 \section{Introduction}
 \label{sec:intro}
 %------------------------------------------------------------------------------
@@ -318,6 +322,7 @@ The ensemble classifier balances between supervised classification from LR-RGDA 
 over the evaluation label space. In our current implementation we use a fixed mixture rather than an OOD router. This avoids introducing a separate threshold-selection problem and keeps the comparison with LADA focused on classifier construction from the same feature source. We report real-feature and statistical-replay variants separately because they answer different memory-budget questions.
 
 %==============================================================================
+\fi
 \section{Experiments}
 \label{sec:experiments}
 
@@ -931,6 +936,8 @@ In our experiments with CLIP ViT-B/16 ($d = 512$) and $r = 16$, LR-RGDA achieves
 Moreover, the per-sample operations (matrix-vector products with $\mathbf{B}^{-1}$ and $\mathbf{U}_c$) are highly parallelizable on modern hardware, enabling further speedups through GPU batching.
 
 %==============================================================================
+\input{sections/lora_nf_appendix}
+\iffalse
 \section{Proof of Theorem~\ref{thm:nsp_lora}: NSP as a Degenerate Form of LoRA}
 \label{app:thm1}
 
@@ -1081,4 +1088,5 @@ We provide PyTorch-style pseudocode for the key components of LoRA-NSP in Algori
     \item \textbf{Memory overhead:} The covariance matrix $\Sigma_{\text{cov}}^{(l)} \in \mathbb{R}^{d_{\text{in}} \times d_{\text{in}}}$ is the primary memory overhead. For CLIP ViT-B/16 with $d_{\text{in}} = 768$ and 12 transformer layers, this totals $12 \times 768^2 \times 4\,\text{bytes} \approx 28\,\text{MB}$ in float32, which is negligible compared to the model size.
 \end{itemize}
 
+\fi
 \end{document}

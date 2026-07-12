@@ -20,7 +20,7 @@ WINNER_ARGS=(${1:-})
 
 PROJECT=/home/raoxuan/projects/project_clip_continual_learning
 PYTHON=/home/raoxuan/ENTER/envs/raoxuan/bin/python
-LOGDIR="$PROJECT/logs/10task_reablation"
+LOGDIR="$PROJECT/artifacts/logs/10task_reablation"
 OUTDIR="$PROJECT/experiments/10task_reablation"
 mkdir -p "$LOGDIR" "$OUTDIR"
 
@@ -65,6 +65,7 @@ launch_one() {
         --null_init_mode none \
         --cd_weight 2.0 --fd_weight 1.0 \
         --cd_divergence kl_forward \
+        --num_centers 4 --rgda_train_iter 200 --rgda_train_lr 0.01 --rgda_fit_source gmm_sample \
         --seed 43 --eval_batch_size 128 \
         --output_dir "$OUTDIR" \
         --experiment_name "$name" \

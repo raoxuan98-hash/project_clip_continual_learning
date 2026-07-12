@@ -117,7 +117,7 @@ def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifie
         (zs_acc, rgda_acc, ens_acc, lada_acc, lada_zs_acc, num_classes_in_dataset, sensitivity_list)
         当 lada_classifier 为 None 时，lada_acc 和 lada_zs_acc 为 None
     """
-    from utils_data import get_xtail_trainloader, get_transforms
+    from src.utils.data import get_xtail_trainloader, get_transforms
     from src.utils.feature_extractor import extract_features
 
     if te_loader is None:
@@ -261,7 +261,7 @@ def batch_evaluate_datasets(
         lada_alpha = getattr(args, 'lada_alpha', lada_alpha)
         use_adaptive = getattr(args, 'adaptive_ensemble', False)
 
-    from utils_data import get_xtail_trainloader, get_transforms
+    from src.utils.data import get_xtail_trainloader, get_transforms
     from src.utils.feature_extractor import extract_features
 
     # 收集所有数据集的 features 和 labels

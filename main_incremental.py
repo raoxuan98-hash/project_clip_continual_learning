@@ -71,7 +71,7 @@ from src.utils.main_utils import (
     evaluate_dataset,
 )
 from src.utils.continual_metrics import ContinualLearningMetrics
-from utils_data import get_xtail_trainloader, get_xtail_classnames, get_transforms
+from src.utils.data import get_xtail_trainloader, get_xtail_classnames, get_transforms
 
 
 class StageTimer:

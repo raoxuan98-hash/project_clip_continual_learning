@@ -8,6 +8,15 @@
 
 **每次与本项目的用户进行有意义的沟通/协作后，必须将对话重点保存到 `chat-history/` 目录。**
 
+论文写作相关协作另行保存到 `chat-history-for-paper-writing/`。两类目录的边界如下：
+
+- `chat-history/`：代码、配置、实验、调试、结果和工程决策；
+- `chat-history-for-paper-writing/`：论文故事、贡献表述、理论路线、章节组织和叙事版本变化。
+
+若一次会话同时产生工程事实与论文叙事决策，应分别记录并相互链接。详细规范见两个目录各自的 `README.md`。
+
+`meta-prompts/` 不属于对话历史。它保存从多次协作中提炼出的、跨会话长期有效的项目全局认知与 AI 元提示，例如项目定位、目录语义、核心方法关系和稳定的工作原则。较大规模任务开始前，应先阅读 `meta-prompts/README.md` 及相关全局认知文件；具体变更过程仍记录在对应 history 目录。
+
 ### 为什么要做？
 - 跨对话的记忆持久化——AI 没有长期记忆，依赖文件系统
 - 让后续进入此项目的 AI agent 能快速了解项目进展
@@ -267,7 +276,11 @@ CLIP 模型在持续学习中的灾难性遗忘。微调会破坏跨模态对齐
 project_clip_continual_learning/
 ├── AGENTS.md                          # ← 本文件
 ├── chat-history/                      # 对话记录（必须更新）
+├── chat-history-for-paper-writing/    # 论文叙事与写作演化记录
+├── meta-prompts/                      # 跨会话稳定的项目全局认知
 ├── paper_writing/                     # 论文写作（LaTeX模板、草稿、参考论文）
+├── main_incremental.py                # 正式持续学习入口
+├── main_joint.py                      # 联合训练/分类器研究入口
 ├── src/
 │   ├── classifiers/                   # LR-RGDA, LDA, QDA 分类器
 │   ├── trainers/                      # LoRA-NSP 训练器
@@ -278,11 +291,14 @@ project_clip_continual_learning/
 ├── configs/
 │   ├── base/default.yaml              # 基础配置（所有实验继承）
 │   └── experiments/*.yaml             # 实验特定配置
-├── scripts/                           # 运行脚本
+├── scripts/                           # 正式工具、启动器、debug 与 legacy 入口
+├── tests/                             # 研究型实现检查
+├── demos/                             # 探索性 notebook
+├── artifacts/                         # 本地日志、结果、生成图和工具会话（不入库）
 ├── scenario_datasets/                 # 数据集加载器
 ├── experiments/                       # 实验结果输出
 ├── optimization/                      # 超参数优化结果
-└── figures/                           # 可视化
+└── paper_writing/paper-template/figures/ # 论文正式图片
 ```
 
 ### 关键实验入口

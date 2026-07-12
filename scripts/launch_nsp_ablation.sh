@@ -9,7 +9,7 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate raoxuan
 PROJ=/home/raoxuan/projects/project_clip_continual_learning
 cd $PROJ
-mkdir -p logs experiments
+mkdir -p artifacts/logs experiments
 
 WAVE=${1:-1}
 
@@ -36,25 +36,25 @@ case $WAVE in
     CUDA_VISIBLE_DEVICES=0 python -u main_incremental.py $COMMON \
         --nsp_eps 0.02 --nsp_weight 0.02 \
         --experiment_name nsp_eps_002 \
-        > logs/nsp_eps_002.log 2>&1 &
+        > artifacts/logs/nsp_eps_002.log 2>&1 &
 
     # GPU 1: eps=0.08
     CUDA_VISIBLE_DEVICES=1 python -u main_incremental.py $COMMON \
         --nsp_eps 0.08 --nsp_weight 0.02 \
         --experiment_name nsp_eps_008 \
-        > logs/nsp_eps_008.log 2>&1 &
+        > artifacts/logs/nsp_eps_008.log 2>&1 &
 
     # GPU 2: eps=0.12
     CUDA_VISIBLE_DEVICES=2 python -u main_incremental.py $COMMON \
         --nsp_eps 0.12 --nsp_weight 0.02 \
         --experiment_name nsp_eps_012 \
-        > logs/nsp_eps_012.log 2>&1 &
+        > artifacts/logs/nsp_eps_012.log 2>&1 &
 
     # GPU 3: eps=0.20
     CUDA_VISIBLE_DEVICES=3 python -u main_incremental.py $COMMON \
         --nsp_eps 0.20 --nsp_weight 0.02 \
         --experiment_name nsp_eps_020 \
-        > logs/nsp_eps_020.log 2>&1 &
+        > artifacts/logs/nsp_eps_020.log 2>&1 &
     ;;
 
   2)
@@ -63,25 +63,25 @@ case $WAVE in
     CUDA_VISIBLE_DEVICES=0 python -u main_incremental.py $COMMON \
         --nsp_eps 0.05 --nsp_weight 0 \
         --experiment_name nsp_w_000 \
-        > logs/nsp_w_000.log 2>&1 &
+        > artifacts/logs/nsp_w_000.log 2>&1 &
 
     # GPU 1: weight=0.01
     CUDA_VISIBLE_DEVICES=1 python -u main_incremental.py $COMMON \
         --nsp_eps 0.05 --nsp_weight 0.01 \
         --experiment_name nsp_w_001 \
-        > logs/nsp_w_001.log 2>&1 &
+        > artifacts/logs/nsp_w_001.log 2>&1 &
 
     # GPU 2: weight=0.05
     CUDA_VISIBLE_DEVICES=2 python -u main_incremental.py $COMMON \
         --nsp_eps 0.05 --nsp_weight 0.05 \
         --experiment_name nsp_w_005 \
-        > logs/nsp_w_005.log 2>&1 &
+        > artifacts/logs/nsp_w_005.log 2>&1 &
 
     # GPU 3: weight=0.10
     CUDA_VISIBLE_DEVICES=3 python -u main_incremental.py $COMMON \
         --nsp_eps 0.05 --nsp_weight 0.10 \
         --experiment_name nsp_w_010 \
-        > logs/nsp_w_010.log 2>&1 &
+        > artifacts/logs/nsp_w_010.log 2>&1 &
     ;;
 
   3)
@@ -90,28 +90,28 @@ case $WAVE in
     CUDA_VISIBLE_DEVICES=0 python -u main_incremental.py $COMMON \
         --nsp_eps 0.05 --nsp_weight 0.02 --use_soft_projection true \
         --experiment_name nsp_soft_default \
-        > logs/nsp_soft_default.log 2>&1 &
+        > artifacts/logs/nsp_soft_default.log 2>&1 &
 
     # GPU 1: soft projection + weight_temp=5.0
     CUDA_VISIBLE_DEVICES=1 python -u main_incremental.py $COMMON \
         --nsp_eps 0.05 --nsp_weight 0.02 --use_soft_projection true \
         --weight_temp 5.0 \
         --experiment_name nsp_soft_temp5 \
-        > logs/nsp_soft_temp5.log 2>&1 &
+        > artifacts/logs/nsp_soft_temp5.log 2>&1 &
 
     # GPU 2: soft + weight_temp=0.5
     CUDA_VISIBLE_DEVICES=2 python -u main_incremental.py $COMMON \
         --nsp_eps 0.05 --nsp_weight 0.02 --use_soft_projection true \
         --weight_temp 0.5 \
         --experiment_name nsp_soft_temp05 \
-        > logs/nsp_soft_temp05.log 2>&1 &
+        > artifacts/logs/nsp_soft_temp05.log 2>&1 &
 
     # GPU 3: soft + weight_kind=linear
     CUDA_VISIBLE_DEVICES=3 python -u main_incremental.py $COMMON \
         --nsp_eps 0.05 --nsp_weight 0.02 --use_soft_projection true \
         --weight_kind linear \
         --experiment_name nsp_soft_linear \
-        > logs/nsp_soft_linear.log 2>&1 &
+        > artifacts/logs/nsp_soft_linear.log 2>&1 &
     ;;
 
   *)

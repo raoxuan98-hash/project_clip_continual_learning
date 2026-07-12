@@ -50,7 +50,7 @@ def extract_features_for_datasets(model, dataset_names, args, transform, device)
     Returns:
         features_dict: 数据集特征字典
     """
-    from utils_data import get_xtail_trainloader
+    from src.utils.data import get_xtail_trainloader
     
     features_dict = {}
     for d_name in dataset_names:

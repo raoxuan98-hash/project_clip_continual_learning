@@ -26,7 +26,7 @@ from src.lada.lada_classifier import LADAClassifier
 from src.utils.continual_metrics import ContinualLearningMetrics
 from src.utils.feature_extractor import extract_features
 from src.utils.main_utils import combine_ensemble_logits, get_zeroshot_classifier
-from utils_data import get_transforms, get_xtail_trainloader
+from src.utils.data import get_transforms, get_xtail_trainloader
 
 
 def parse_args():

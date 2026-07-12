@@ -9,7 +9,7 @@ from src.trainers.lora_nsp_trainer import LoRANSPTrainer
 from src.classifiers.lr_rgda_classifier import LRRGDAClassifier, EnsembleClassifier
 from src.utils.feature_extractor import extract_features
 from src.utils.reference_loader import load_reference_dataset
-from utils_data import get_xtail_trainloader, get_transforms
+from src.utils.data import get_xtail_trainloader, get_transforms
 
 
 def get_zeroshot_classifier(model, processor, class_names, device):

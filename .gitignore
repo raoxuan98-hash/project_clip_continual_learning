@@ -1,5 +1,4 @@
 # Python
-figures/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -42,7 +41,7 @@ env/
 *.ipynb_checkpoints/
 
 # Logs
-logs/
+artifacts/logs/
 *.log
 *.log.*
 
@@ -60,7 +59,7 @@ cache/
 
 # Output directories
 output/
-results/
+artifacts/results/
 optimization_results/
 
 demo_ood.ipynb
@@ -71,6 +70,11 @@ PRESENTATION.md
 experiments/
 optimization/
 
+# Local generated artifacts and tool sessions
+artifacts/figures/
+artifacts/tool-runs/
+artifacts/archive/
+
 # Paper writing - reference papers (copyrighted), personal notes, discussions
 paper_writing/reference_papers/
 paper_writing/my_original_papers/
@@ -80,12 +84,17 @@ paper_writing/.workbuddy/
 
 # Compiled PDF artifacts
 *.pdf
+*.aux
+*.out
+*.fdb_latexmk
+*.fls
 
 .workbuddy/
 
 # Backup files
 *.backup.*
 *.bak
+*.bak*
 classifier_backup_*/
 
 # OS generated files

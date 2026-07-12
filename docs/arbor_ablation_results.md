@@ -163,10 +163,10 @@ B2 (hist_null_init_runtime):
 
 | 文件 | 路径 |
 |------|------|
-| Arbor 最终报告 | `.arbor/sessions/run_20260625_235154/REPORT.md` |
-| Coordinator 报告 | `.arbor/sessions/run_20260625_235154/COORDINATOR_FINAL_REPORT.txt` |
+| Arbor 最终报告 | `artifacts/tool-runs/arbor/sessions/run_20260625_235154/REPORT.md` |
+| Coordinator 报告 | `artifacts/tool-runs/arbor/sessions/run_20260625_235154/COORDINATOR_FINAL_REPORT.txt` |
 | 实验汇总 | `experiments/null_basis_ablation/summary.md` |
 | 实验 CSV | `experiments/null_basis_ablation/summary.csv` |
-| Idea Tree | `.arbor/sessions/run_20260625_235154/.coordinator/idea_tree.md` |
-| 事件日志 | `.arbor/sessions/run_20260625_235154/events.jsonl` |
+| Idea Tree | `artifacts/tool-runs/arbor/sessions/run_20260625_235154/.coordinator/idea_tree.md` |
+| 事件日志 | `artifacts/tool-runs/arbor/sessions/run_20260625_235154/events.jsonl` |
 | 运行日志 | `arbor_ablation.log` |

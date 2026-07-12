@@ -16,7 +16,7 @@ while [ ! -f "experiments/phase3/D_lora_nsp_only/final_model.pt" ]; do
 done
 
 echo "Method D checkpoint found! Starting Method E..."
-python main.py \
+python scripts/legacy/main.py \
     --load_checkpoint experiments/phase3/D_lora_nsp_only/final_model.pt \
     --enable_routing \
     --output_dir experiments/phase3/E_lora_nsp_full \

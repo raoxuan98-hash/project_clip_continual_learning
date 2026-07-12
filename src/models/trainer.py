@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from src.models.clip import get_clip_model
 from src.models.utils import feature_distillation_loss, EMASmooth, cross_modal_distillation_loss
 from tqdm import tqdm
-from utils_data import MergedReferenceDataset
+from src.utils.data import MergedReferenceDataset
 
 class Trainer:
     """Manages training loop and reference data for SubspaceLoRA CLIP."""

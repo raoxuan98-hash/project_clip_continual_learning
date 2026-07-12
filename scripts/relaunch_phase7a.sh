@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 cd /home/raoxuan/projects/project_clip_continual_learning
+mkdir -p artifacts/logs/10task_reablation
 
 pkill -f "soft_nsp_w0.01" 2>/dev/null || true
 pkill -f "soft_nsp_w0.02" 2>/dev/null || true
@@ -23,15 +24,15 @@ CMD="/home/raoxuan/ENTER/envs/raoxuan/bin/python -u main_incremental.py \
   --output_dir experiments/10task_reablation"
 
 CUDA_VISIBLE_DEVICES=1 nohup $CMD --nsp_weight 0.01 --experiment_name soft_nsp_w0.01 \
-  > logs/10task_reablation/soft_nsp_w0.01.log 2>&1 &
+  > artifacts/logs/10task_reablation/soft_nsp_w0.01.log 2>&1 &
 echo "w0.01 on GPU1 PID=$!"
 
 CUDA_VISIBLE_DEVICES=2 nohup $CMD --nsp_weight 0.02 --experiment_name soft_nsp_w0.02 \
-  > logs/10task_reablation/soft_nsp_w0.02.log 2>&1 &
+  > artifacts/logs/10task_reablation/soft_nsp_w0.02.log 2>&1 &
 echo "w0.02 on GPU2 PID=$!"
 
 CUDA_VISIBLE_DEVICES=4 nohup $CMD --nsp_weight 0.05 --experiment_name soft_nsp_w0.05 \
-  > logs/10task_reablation/soft_nsp_w0.05.log 2>&1 &
+  > artifacts/logs/10task_reablation/soft_nsp_w0.05.log 2>&1 &
 echo "w0.05 on GPU4 PID=$!"
 
 sleep 5

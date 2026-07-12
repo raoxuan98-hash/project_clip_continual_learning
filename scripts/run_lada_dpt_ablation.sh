@@ -24,7 +24,7 @@ COMMON_ARGS=(
 )
 
 for MODE in none mean dpt; do
-  python main_incremental_lada.py \
+  python scripts/legacy/main_incremental_lada.py \
     "${COMMON_ARGS[@]}" \
     --lada_replay_mode "${MODE}" \
     2>&1 | tee "${OUT_DIR}/${MODE}.log"

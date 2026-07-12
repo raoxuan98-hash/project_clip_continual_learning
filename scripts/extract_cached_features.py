@@ -16,7 +16,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from transformers import CLIPModel, CLIPProcessor
-from utils_data import get_xtail_trainloader, get_xtail_testloader, get_transforms
+from src.utils.data import get_xtail_trainloader, get_xtail_testloader, get_transforms
 
 
 def parse_args():

@@ -273,7 +273,7 @@ def extract_stats_dict_from_model(
     Returns:
         类别统计分布字典 {class_id: GaussianStatistics}
     """
-    from utils_data import get_xtail_trainloader, get_transforms
+    from src.utils.data import get_xtail_trainloader, get_transforms
 
     model.eval()
     stats_dict = {}

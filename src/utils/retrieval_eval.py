@@ -12,7 +12,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from utils_data import Flickr8kDataset, get_transforms
+from src.utils.data import Flickr8kDataset, get_transforms
 
 
 class RetrievalImageDataset(Dataset):
