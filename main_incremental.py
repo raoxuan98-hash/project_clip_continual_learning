@@ -626,6 +626,8 @@ def parse_args():
     parser.add_argument("--alpha_sensitivity", action="store_true", default=True,
                         help="Enable per-task alpha sensitivity sweep (21 points 0.0-1.0). "
                              "Use --no-alpha_sensitivity to disable.")
+    parser.add_argument("--no-alpha_sensitivity", dest="alpha_sensitivity", action="store_false",
+                        help="Disable per-task alpha sensitivity sweep.")
     parser.add_argument("--n_alpha_samples", type=int, default=21,
                         help="Number of alpha points in sensitivity sweep.")
     parser.add_argument("--alpha_sweep_batch_size", type=int, default=512,
