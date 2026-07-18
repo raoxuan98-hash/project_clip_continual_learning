@@ -246,6 +246,10 @@ def load_retrieval_dataset(dataset_name, root, max_images=0):
         )
 
     if dataset_name == "flickr30k_hf":
+        # flickr30k_hf: Karpathy 1K test 全量（1000 图/5000 caption）。
+        # 蒸馏参考已改为 flickr30k train split 子集（见 reference_loader），
+        # 与 test split 零重叠，因此评测始终使用完整测试集。
+        expected_images, expected_captions = 1000, 5000
         data_dir = root / "data"
         if not data_dir.is_dir():
             raise FileNotFoundError(f"Flickr30K HF data directory missing: {data_dir}")
@@ -256,7 +260,7 @@ def load_retrieval_dataset(dataset_name, root, max_images=0):
             raise FileNotFoundError(
                 f"No Flickr30K test parquet files (test-*.parquet) found under {data_dir}. "
                 "The full-dataset fallback was removed: place the canonical Karpathy "
-                "1K test split parquet here.")
+                "test split parquet here.")
 
         try:
             import pandas as pd
@@ -295,15 +299,16 @@ def load_retrieval_dataset(dataset_name, root, max_images=0):
         if not samples:
             raise ValueError(f"No Flickr30K HF retrieval samples found under {root}")
         if limit is None:
-            # 完整评估时必须恰好是 Karpathy 1K test：1000 图、5000 条 caption。
+            # 完整评估时必须恰好是声明的 split 规模（见分支开头注释）。
             n_captions = sum(len(p) for p in prompts_list)
-            if len(samples) != 1000 or n_captions != 5000:
+            if len(samples) != expected_images or n_captions != expected_captions:
                 raise ValueError(
-                    f"Flickr30K test split mismatch: expected 1000 images / 5000 captions "
-                    f"(Karpathy 1K test), got {len(samples)} images / {n_captions} captions. "
+                    f"{dataset_name} split mismatch: expected {expected_images} images / "
+                    f"{expected_captions} captions, got {len(samples)} images / "
+                    f"{n_captions} captions. "
                     "Fix the dataset or pass --retrieval_max_images for a smoke run.")
         return BytesCaptionRetrievalDataset(
-            "flickr30k_hf", root, samples, prompts_list, transform, language="en"
+            dataset_name, root, samples, prompts_list, transform, language="en"
         )
 
     if dataset_name == "flickr30k_cn":

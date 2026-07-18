@@ -48,7 +48,7 @@ training:
   # 蒸馏参数
   distillation:
     enabled: true
-    reference_dataset: "flickr8k"
+    reference_dataset: "flickr30k_train_sub8k"
     fd_weight: 1.0  # 特征蒸馏权重
     cd_weight: 1.0  # 跨模态蒸馏权重
 

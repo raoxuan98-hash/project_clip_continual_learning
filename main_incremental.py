@@ -592,8 +592,9 @@ def parse_args():
                         help="P parameter for weight function.")
 
     # 参考数据集参数
-    parser.add_argument("--reference_dataset", type=str, default="flickr8k",
-                        help="Reference dataset for training.")
+    parser.add_argument("--reference_dataset", type=str, default="flickr30k_train_sub8k",
+                        help="Reference dataset for training "
+                             "(flickr30k_train_sub8k | flickr8k; 其余值跳过蒸馏参考).")
     parser.add_argument("--reference_batch_size", type=int, default=32,
                         help="Batch size for reference dataset.")
     parser.add_argument("--num_workers", type=int, default=6,

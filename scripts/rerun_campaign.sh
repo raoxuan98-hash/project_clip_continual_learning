@@ -23,7 +23,7 @@ BASE_ARGS="--root /data1/open_datasets/X-TAIL \
 --lora_rank 4 --lora_alpha 4 --lora_dropout 0.0 \
 --lora_target_modules q_proj,k_proj,v_proj,out_proj,fc1,fc2 \
 --projection_param_mode full --nsp_eps 0.20 --nsp_weight 0.02 \
---reference_dataset flickr8k --reference_batch_size 32 \
+--reference_dataset flickr30k_train_sub8k --reference_batch_size 32 \
 --fd_weight 0.0 --cd_weight 2.0 --cd_divergence kl_forward --cd_temperature 4.0 --aux_weight 0.0 \
 --tune_vision_encoder true --tune_text_encoder true --text_lora_rank 4 \
 --text_tuning_schedule always --text_classifier_mode lada_hybrid \

@@ -41,21 +41,27 @@ class MergedReferenceDataset(Dataset):
 def load_reference_dataset(args, model_pretrain, processor, device,
                            return_tokenized_text=False):
     """
-    加载并缓存参考数据集（Flickr8K）用于蒸馏
+    加载并缓存参考数据集用于蒸馏（flickr8k 目录格式：images/ + captions.txt）。
     Args:
         return_tokenized_text: 若为 True，DataLoader 每批返回
             (images, input_ids, attention_mask, img_features, txt_features)，
             避免训练循环重复调用 tokenizer；否则返回原始 4 元组。
     Returns: DataLoader or None
     """
-    if args.reference_dataset != "flickr8k":
+    # flickr30k_train_sub8k：从 Karpathy train split 采样 8000 图（与 1K test
+    # 零重叠，见 scripts/build_flickr30k_train_reference.py）；flickr8k 为旧参考，
+    # 与 Flickr30K test 有 243 图重合，仅保留用于历史对照。
+    REFERENCE_ROOTS = {
+        "flickr8k": "/data1/open_datasets/flickr8k/",
+        "flickr30k_train_sub8k": "/mnt/raoxuan/open_datasets/flickr30k_train_sub8k/",
+    }
+    if args.reference_dataset not in REFERENCE_ROOTS:
         print("Skipping reference dataset loading.")
         return None
-    
+
     try:
-        # 加载 Flickr8k
         from src.utils.data import Flickr8kDataset
-        ref_dataset_obj = Flickr8kDataset(root="/data1/open_datasets/flickr8k/")
+        ref_dataset_obj = Flickr8kDataset(root=REFERENCE_ROOTS[args.reference_dataset])
         raw_ref_loader = ref_dataset_obj.return_loader(
             batch_size=32, shuffle=False, num_workers=4
         )

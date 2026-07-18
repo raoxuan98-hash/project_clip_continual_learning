@@ -73,12 +73,14 @@ class LoRANSPTrainer:
         self.gradient_projection_matrices: Dict[str, torch.Tensor] = {}
         self.text_gradient_projection_matrices: Dict[str, torch.Tensor] = {}
 
-        # 加载图像协方差历史
-        if self.covariance_history and self.has_vision_lora:
+        # 加载图像协方差历史（vanilla LoRA 无投影矩阵，跳过）
+        if (self.covariance_history and self.has_vision_lora
+                and hasattr(self.model.vision_model, 'update_projection_matrices')):
             logging.info(f"Loading image covariance history with {len(self.covariance_history)} layers")
             self.model.vision_model.update_projection_matrices(self.covariance_history)
-        # 加载文本协方差历史
-        if self.text_covariance_history and self.has_text_lora:
+        # 加载文本协方差历史（vanilla LoRA 无投影矩阵，跳过）
+        if (self.text_covariance_history and self.has_text_lora
+                and hasattr(self.model.text_model, 'update_projection_matrices')):
             logging.info(f"Loading text covariance history with {len(self.text_covariance_history)} layers")
             self.model.text_model.update_projection_matrices(self.text_covariance_history)
 
@@ -297,6 +299,11 @@ class LoRANSPTrainer:
     ):
         """更新图像协方差历史（等权平均），并可选择更新投影矩阵 / basis 矩阵。"""
         logging.info(f"=== Updating Image Covariance History ===")
+        # vanilla LoRA 没有投影/basis 矩阵：仅记录协方差历史，跳过投影更新
+        if not hasattr(self.model.vision_model, "update_projection_matrices"):
+            update_projection = False
+        if not hasattr(self.model.vision_model, "update_basis_matrices"):
+            update_basis = False
         update_fn = self._no_op
         if update_projection and update_basis:
             def update_fn(covs):
@@ -323,6 +330,11 @@ class LoRANSPTrainer:
         if not new_covariances:
             return
         logging.info(f"=== Updating Text Covariance History ===")
+        # vanilla LoRA 没有投影/basis 矩阵：仅记录协方差历史，跳过投影更新
+        if not hasattr(self.model.text_model, "update_projection_matrices"):
+            update_projection = False
+        if not hasattr(self.model.text_model, "update_basis_matrices"):
+            update_basis = False
         update_fn = self._no_op
         if update_projection and update_basis:
             def update_fn(covs):
