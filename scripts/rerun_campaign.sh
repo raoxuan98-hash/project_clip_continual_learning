@@ -14,6 +14,9 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# 模型权重全部走本地 HF 缓存，避免多天无人值守运行期间的 hub 网络抖动
+export CLIP_LOCAL_FILES_ONLY=1
+
 PY=/home/raoxuan/ENTER/envs/raoxuan/bin/python
 RETR_ROOTS="mscoco_2014_5k=/mnt/raoxuan/open_datasets/mscoco_2014_5k_test_hf,flickr30k_hf=/mnt/raoxuan/open_datasets/flickr30k_hf"
 
