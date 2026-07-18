@@ -151,3 +151,30 @@ Wave 0（review+smoke）→ Wave A → Wave B ∥ Wave C（GPU 空闲即插）�
 - `src/trainers/lora_nsp_trainer.py`：vanilla LoRA 三处 `hasattr` 守卫（`__init__` 协方差加载、两个 `update_*_covariance_history`），修复 waveA vanilla seed43 崩溃。
 
 **影响**：所有在跑/待跑 wave 的训练数据变化，旧参考的 Wave A 部分运行（无任何完成 run）已全部终止并清除输出，Wave A 以新参考重新启动；Wave0 smoke 以新参考重跑（追加 vanilla 守卫路径验证）。v2 数字与 v2 时代 Flickr8K 数字均不与本战役混比，汇总文档需注明参考集差异。
+
+---
+
+## 8. Wave B–E 静态 review 门记录（2026-07-19，启动前预检）
+
+§1 三项核查（CLI 接线 / 配置核对 / 输出冲突），对 `scripts/rerun_campaign.sh`（`d323470` 版）静态执行：
+
+**Wave B（9 runs）**
+- CLI 接线：`--fd_weight/--cd_weight` 覆盖在 BASE_ARGS（fd=0, cd=2）之后，顺序正确生效；C0/C1/C3 × seeds{42,43,44} 与计划矩阵一致；C2（fd0,cd2）复用 Wave A lora_nf，不重复跑。✓
+- 配置核对：其余超参全继承 BASE_ARGS（与 E1 同协议）。✓
+- 输出冲突：目录 `experiments/paper_formal/WaveB_components/`，与 WaveA_main 不相交；skip 逻辑按 ens JSON 断点续跑。✓
+
+**Wave C（6 LoRA runs + 6 LADA runs）**
+- CLI 接线：`--full_shot` flag 存在于 main_incremental.py:480（num_shots 置 None 路径 line 909）；LADA 侧 `waveC_lada` 分支调 `scripts/run_lada_official_campaign.sh`，epochs 与官方 run_TAIL_{16shot,fullshot}.sh 逐条一致，`num_shots=-1` 官方原生全量（scenario_datasets/utils.py:319）。✓
+- 配置核对：LADA seed 经 CLI `seed N` 覆盖（官方 config 支持，main.py:38）；root 显式传 `/data1/open_datasets/X-TAIL`（TAIL.yaml 为占位符）。✓
+- 输出冲突：LoRA 侧 `WaveC_fullshot/`；LADA 侧结果拷回 `WaveC_lada/waveC_TAIL_*_result.txt`，LADA_official/output 内目录名带 waveC_ 前缀不覆盖历史。✓
+
+**Wave D（15 runs，seed43）**
+- CLI 接线：cdw{0.5,1.0,4.0}、cdt{1.0,2.0,8.0}、eps{0.02,0.05,0.10}、nspw{0.00,0.04,0.08,0.16}、layers{attn,ffn} 共 15 个非默认点；默认点（cdw2.0/cdt4.0/eps0.20/nspw0.02/all layers）复用 waveA seed43。✓
+- 输出冲突：`WaveD_hparams/`，GPU5 无分配（15=3+3+3+4+2）。✓
+- 端点补种（~6 runs）在 seed43 结果出来后按计划另启。✓
+
+**Wave E（3 runs，SigLIP2）**
+- CLI 接线：seed=$((41+GPU)) 设计要求**只以 GPU 0/1/2 启动**（seeds 42/43/44）；`SIGLIP2_MODEL_DIR` 默认 `/mnt/raoxuan/models/siglip2-base-patch16-224`（9 文件已下载齐全）。✓
+- 已知边界：SigLIP2 为 softmax 口径（计划 §6 已记 2-6% ZS 异常列现象，照实记录）。✓
+
+**统一项**：所有分支均带 `--reference_dataset flickr30k_train_sub8k`（§7 修订后）、`--no-alpha_sensitivity`、检索 canonical roots；waveC_lada 不经 main_incremental，不适用参考集/检索约束（官方代码原样）。
