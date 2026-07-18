@@ -3,7 +3,7 @@
 #
 # 用法:
 #   bash scripts/rerun_campaign.sh <wave> <gpu>
-#   wave: smoke | waveA | waveB | waveC | waveD | waveE
+#   wave: smoke | waveA | waveB | waveC | waveC_lada | waveD | waveE
 #   每个 wave 内部按 GPU 静态分工（见各分支），同一 GPU 内串行；
 #   已有 _ens_results.json 的 run 自动跳过（断点续跑）。
 set -u
@@ -119,6 +119,17 @@ waveC)
     3) run_one 3 WaveC_fullshot waveC__lora__fs__seed42 $LORA_VANILLA --full_shot --seed 42 ;;
     4) run_one 4 WaveC_fullshot waveC__lora__fs__seed43 $LORA_VANILLA --full_shot --seed 43 ;;
     5) run_one 5 WaveC_fullshot waveC__lora__fs__seed44 $LORA_VANILLA --full_shot --seed 44 ;;
+  esac
+  ;;
+waveC_lada)
+  # 官方 LADA 基线 6 runs（3 seeds × {16shot, fullshot}），每 GPU 1 run
+  case $GPU in
+    0) bash scripts/run_lada_official_campaign.sh 16shot 0 42 ;;
+    1) bash scripts/run_lada_official_campaign.sh 16shot 1 43 ;;
+    2) bash scripts/run_lada_official_campaign.sh 16shot 2 44 ;;
+    3) bash scripts/run_lada_official_campaign.sh fullshot 3 42 ;;
+    4) bash scripts/run_lada_official_campaign.sh fullshot 4 43 ;;
+    5) bash scripts/run_lada_official_campaign.sh fullshot 5 44 ;;
   esac
   ;;
 waveD)
