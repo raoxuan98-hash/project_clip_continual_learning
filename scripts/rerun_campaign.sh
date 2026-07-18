@@ -68,68 +68,59 @@ smoke)
   ;;
 
 waveA)
-  # 12 runs = 4 配置 × 3 seeds；按 GPU 静态分工：每 GPU 一个配置的 3 个 seeds
+  # 12 runs = 4 配置 × 3 seeds；6 GPU 静态分工，每 GPU 2 runs
   case $GPU in
     0)
-      for seed in 42 43 44; do
-        run_one 0 WaveA_main waveA__lora_nf__16shot__seed${seed} $LORA_NF --seed $seed
-      done ;;
+      run_one 0 WaveA_main waveA__lora_nf__16shot__seed42 $LORA_NF --seed 42
+      run_one 0 WaveA_main waveA__lora_nf__16shot__seed43 $LORA_NF --seed 43 ;;
     1)
-      for seed in 42 43 44; do
-        run_one 1 WaveA_main waveA__lora__16shot__seed${seed} $LORA_VANILLA --seed $seed
-      done ;;
+      run_one 1 WaveA_main waveA__lora_nf__16shot__seed44 $LORA_NF --seed 44
+      run_one 1 WaveA_main waveA__lora__16shot__seed42 $LORA_VANILLA --seed 42 ;;
     2)
-      for seed in 42 43 44; do
-        run_one 2 WaveA_main waveA__lora_null__16shot__seed${seed} $LORA_NF \
-          --null_init_mode history_init_only --seed $seed
-      done ;;
+      run_one 2 WaveA_main waveA__lora__16shot__seed43 $LORA_VANILLA --seed 43
+      run_one 2 WaveA_main waveA__lora__16shot__seed44 $LORA_VANILLA --seed 44 ;;
     3)
-      for seed in 42 43 44; do
-        run_one 3 WaveA_main waveA__gradproj__16shot__seed${seed} $LORA_NF \
-          --use_gradient_projection --seed $seed
-      done ;;
+      run_one 3 WaveA_main waveA__lora_null__16shot__seed42 $LORA_NF --null_init_mode history_init_only --seed 42
+      run_one 3 WaveA_main waveA__lora_null__16shot__seed43 $LORA_NF --null_init_mode history_init_only --seed 43 ;;
+    4)
+      run_one 4 WaveA_main waveA__lora_null__16shot__seed44 $LORA_NF --null_init_mode history_init_only --seed 44
+      run_one 4 WaveA_main waveA__gradproj__16shot__seed42 $LORA_NF --use_gradient_projection --seed 42 ;;
+    5)
+      run_one 5 WaveA_main waveA__gradproj__16shot__seed43 $LORA_NF --use_gradient_projection --seed 43
+      run_one 5 WaveA_main waveA__gradproj__16shot__seed44 $LORA_NF --use_gradient_projection --seed 44 ;;
   esac
   ;;
-
 waveB)
-  # 9 runs = 3 配置 × 3 seeds；GPU0-2 各一个配置，GPU3 空闲（可插其他 wave）
+  # 9 runs = 3 配置 × 3 seeds；6 GPU 分工
   case $GPU in
     0)
-      for seed in 42 43 44; do
-        run_one 0 WaveB_components waveB__C0_fd0_cd0__16shot__seed${seed} $LORA_NF \
-          --fd_weight 0.0 --cd_weight 0.0 --seed $seed
-      done ;;
+      run_one 0 WaveB_components waveB__C0_fd0_cd0__16shot__seed42 $LORA_NF --fd_weight 0.0 --cd_weight 0.0 --seed 42
+      run_one 0 WaveB_components waveB__C3_fd1_cd2__16shot__seed42 $LORA_NF --fd_weight 1.0 --cd_weight 2.0 --seed 42 ;;
     1)
-      for seed in 42 43 44; do
-        run_one 1 WaveB_components waveB__C1_fd1_cd0__16shot__seed${seed} $LORA_NF \
-          --fd_weight 1.0 --cd_weight 0.0 --seed $seed
-      done ;;
+      run_one 1 WaveB_components waveB__C0_fd0_cd0__16shot__seed43 $LORA_NF --fd_weight 0.0 --cd_weight 0.0 --seed 43
+      run_one 1 WaveB_components waveB__C3_fd1_cd2__16shot__seed43 $LORA_NF --fd_weight 1.0 --cd_weight 2.0 --seed 43 ;;
     2)
-      for seed in 42 43 44; do
-        run_one 2 WaveB_components waveB__C3_fd1_cd2__16shot__seed${seed} $LORA_NF \
-          --fd_weight 1.0 --cd_weight 2.0 --seed $seed
-      done ;;
+      run_one 2 WaveB_components waveB__C0_fd0_cd0__16shot__seed44 $LORA_NF --fd_weight 0.0 --cd_weight 0.0 --seed 44
+      run_one 2 WaveB_components waveB__C3_fd1_cd2__16shot__seed44 $LORA_NF --fd_weight 1.0 --cd_weight 2.0 --seed 44 ;;
     3)
-      echo "[waveB gpu3] 无分配（可并行 waveC/waveD）" ;;
+      run_one 3 WaveB_components waveB__C1_fd1_cd0__16shot__seed42 $LORA_NF --fd_weight 1.0 --cd_weight 0.0 --seed 42 ;;
+    4)
+      run_one 4 WaveB_components waveB__C1_fd1_cd0__16shot__seed43 $LORA_NF --fd_weight 1.0 --cd_weight 0.0 --seed 43 ;;
+    5)
+      run_one 5 WaveB_components waveB__C1_fd1_cd0__16shot__seed44 $LORA_NF --fd_weight 1.0 --cd_weight 0.0 --seed 44 ;;
   esac
   ;;
-
 waveC)
   # 6 runs = 2 配置 × 3 seeds（full-shot）
   case $GPU in
-    0)
-      for seed in 42 43 44; do
-        run_one 0 WaveC_fullshot waveC__lora_nf__fs__seed${seed} $LORA_NF --full_shot --seed $seed
-      done ;;
-    1)
-      for seed in 42 43 44; do
-        run_one 1 WaveC_fullshot waveC__lora__fs__seed${seed} $LORA_VANILLA --full_shot --seed $seed
-      done ;;
-    *)
-      echo "[waveC gpu$GPU] 无分配" ;;
+    0) run_one 0 WaveC_fullshot waveC__lora_nf__fs__seed42 $LORA_NF --full_shot --seed 42 ;;
+    1) run_one 1 WaveC_fullshot waveC__lora_nf__fs__seed43 $LORA_NF --full_shot --seed 43 ;;
+    2) run_one 2 WaveC_fullshot waveC__lora_nf__fs__seed44 $LORA_NF --full_shot --seed 44 ;;
+    3) run_one 3 WaveC_fullshot waveC__lora__fs__seed42 $LORA_VANILLA --full_shot --seed 42 ;;
+    4) run_one 4 WaveC_fullshot waveC__lora__fs__seed43 $LORA_VANILLA --full_shot --seed 43 ;;
+    5) run_one 5 WaveC_fullshot waveC__lora__fs__seed44 $LORA_VANILLA --full_shot --seed 44 ;;
   esac
   ;;
-
 waveD)
   # 15 runs，seed 43；默认点 = waveA seed43 复用
   case $GPU in
@@ -149,22 +140,21 @@ waveD)
       run_one 3 WaveD_hparams waveD__nspw0p00__16shot__seed43 $LORA_NF --nsp_weight 0.0 --seed 43
       run_one 3 WaveD_hparams waveD__nspw0p04__16shot__seed43 $LORA_NF --nsp_weight 0.04 --seed 43
       run_one 3 WaveD_hparams waveD__nspw0p08__16shot__seed43 $LORA_NF --nsp_weight 0.08 --seed 43
-      run_one 3 WaveD_hparams waveD__nspw0p16__16shot__seed43 $LORA_NF --nsp_weight 0.16 --seed 43
-      run_one 3 WaveD_hparams waveD__layers_attn__16shot__seed43 $LORA_NF \
+      run_one 3 WaveD_hparams waveD__nspw0p16__16shot__seed43 $LORA_NF --nsp_weight 0.16 --seed 43 ;;
+    4)
+      run_one 4 WaveD_hparams waveD__layers_attn__16shot__seed43 $LORA_NF \
         --lora_target_modules q_proj,k_proj,v_proj,out_proj --seed 43
-      run_one 3 WaveD_hparams waveD__layers_ffn__16shot__seed43 $LORA_NF \
+      run_one 4 WaveD_hparams waveD__layers_ffn__16shot__seed43 $LORA_NF \
         --lora_target_modules fc1,fc2 --seed 43 ;;
+    5)
+      echo "[waveD gpu5] 无分配" ;;
   esac
   ;;
-
 waveE)
-  # 3 runs（SigLIP2），单 GPU 串行；模型目录由调用前准备
+  # 3 runs（SigLIP2），GPU0-2 各 1 run；模型目录由调用前准备
   export CLIP_MODEL_NAME=${SIGLIP2_MODEL_DIR:-/mnt/raoxuan/models/siglip2-base-patch16-224}
-  for seed in 42 43 44; do
-    run_one $GPU WaveE_siglip2 waveE__siglip2_lora_nf__16shot__seed${seed} $LORA_NF --seed $seed
-  done
+  run_one $GPU WaveE_siglip2 waveE__siglip2_lora_nf__16shot__seed$((41+GPU)) $LORA_NF --seed $((41+GPU))
   ;;
-
 *)
   echo "unknown wave: $WAVE"; exit 1 ;;
 esac
