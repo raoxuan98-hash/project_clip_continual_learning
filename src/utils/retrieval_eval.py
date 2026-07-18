@@ -233,6 +233,14 @@ def load_retrieval_dataset(dataset_name, root, max_images=0):
         samples, prompts_list = _apply_max_images(samples, prompts_list, max_images)
         if not samples:
             raise ValueError(f"No MSCOCO 5K retrieval samples found under {root}")
+        if not (max_images and int(max_images) > 0):
+            # 完整评估时必须恰好是 Karpathy 5K test：5000 图、约 25000 条 caption。
+            n_captions = sum(len(p) for p in prompts_list)
+            if len(samples) != 5000 or n_captions < 25000:
+                raise ValueError(
+                    f"MSCOCO 5K test split mismatch: expected 5000 images / >=25000 captions "
+                    f"(Karpathy 5K test), got {len(samples)} images / {n_captions} captions. "
+                    "Fix the dataset or pass --retrieval_max_images for a smoke run.")
         return PathCaptionRetrievalDataset(
             "mscoco_2014_5k", root, samples, prompts_list, transform, language="en"
         )
@@ -241,11 +249,14 @@ def load_retrieval_dataset(dataset_name, root, max_images=0):
         data_dir = root / "data"
         if not data_dir.is_dir():
             raise FileNotFoundError(f"Flickr30K HF data directory missing: {data_dir}")
+        # 只允许 Karpathy test split 的 test-*.parquet；不提供全量回退，
+        # 防止误用 Flickr30K 全 31K 图像充当测试集。
         parquet_paths = sorted(data_dir.glob("test-*.parquet"))
         if not parquet_paths:
-            parquet_paths = sorted(data_dir.glob("*.parquet"))  # fallback: all files
-        if not parquet_paths:
-            raise FileNotFoundError(f"No Flickr30K HF parquet files found under {data_dir}")
+            raise FileNotFoundError(
+                f"No Flickr30K test parquet files (test-*.parquet) found under {data_dir}. "
+                "The full-dataset fallback was removed: place the canonical Karpathy "
+                "1K test split parquet here.")
 
         try:
             import pandas as pd
@@ -283,6 +294,14 @@ def load_retrieval_dataset(dataset_name, root, max_images=0):
                 break
         if not samples:
             raise ValueError(f"No Flickr30K HF retrieval samples found under {root}")
+        if limit is None:
+            # 完整评估时必须恰好是 Karpathy 1K test：1000 图、5000 条 caption。
+            n_captions = sum(len(p) for p in prompts_list)
+            if len(samples) != 1000 or n_captions != 5000:
+                raise ValueError(
+                    f"Flickr30K test split mismatch: expected 1000 images / 5000 captions "
+                    f"(Karpathy 1K test), got {len(samples)} images / {n_captions} captions. "
+                    "Fix the dataset or pass --retrieval_max_images for a smoke run.")
         return BytesCaptionRetrievalDataset(
             "flickr30k_hf", root, samples, prompts_list, transform, language="en"
         )

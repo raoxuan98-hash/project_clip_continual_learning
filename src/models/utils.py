@@ -25,11 +25,49 @@ def feature_distillation_loss(
     return (1 - cosine_sim).mean()
 
 
-def _logits_and_probs(logit_scale, img_feat, text_feat, temperature):
-    logits = logit_scale.exp() * (img_feat @ text_feat.t())
-    log_probs = F.log_softmax(logits / temperature, dim=-1)
-    probs = torch.softmax(logits / temperature, dim=-1)
-    return logits, log_probs, probs
+def _logits_and_probs_bidir(logit_scale, img_feat, text_feat, temperature):
+    """双向 softmax 分布：I2T（行方向）与 T2I（列方向）。
+
+    旧的单向实现只约束 image→text 分布，会让 text→image 方向的检索几何
+    在训练中无约束漂移；双向分布与 CLIP 原始对称对比目标同构。
+    """
+    logits = logit_scale.exp() * (img_feat @ text_feat.t()) / temperature
+    log_probs_i2t = F.log_softmax(logits, dim=-1)
+    probs_i2t = logits.softmax(dim=-1)
+    log_probs_t2i = F.log_softmax(logits, dim=-2)
+    probs_t2i = logits.softmax(dim=-2)
+    return log_probs_i2t, probs_i2t, log_probs_t2i, probs_t2i
+
+
+def _directional_divergence(s_log_probs, s_probs, t_log_probs, t_probs,
+                            temperature, divergence):
+    """单方向上的蒸馏散度。kl_forward / kl_reverse / js 带 τ² 因子。"""
+    if divergence == "kl_forward":
+        # D_KL(teacher || student)
+        return F.kl_div(input=s_log_probs, target=t_probs,
+                        reduction="batchmean") * (temperature ** 2)
+    if divergence == "kl_reverse":
+        # D_KL(student || teacher)。显式展开：F.kl_div 不向 target 回传梯度，
+        # 旧写法（input=t_log_probs, target=s_probs）对学生不产生梯度。
+        return ((s_probs * (s_log_probs - t_log_probs)).sum(dim=-1).mean()
+                * (temperature ** 2))
+    if divergence == "js":
+        m_probs = 0.5 * (t_probs + s_probs)
+        m_log_probs = torch.log(m_probs.clamp_min(1e-12))
+        kl_t_m = F.kl_div(input=m_log_probs, target=t_probs,
+                          reduction="batchmean")
+        kl_s_m = (s_probs * (s_log_probs - m_log_probs)).sum(dim=-1).mean()
+        return 0.5 * (kl_t_m + kl_s_m) * (temperature ** 2)
+    if divergence == "mse":
+        return F.mse_loss(s_probs, t_probs, reduction="mean")
+    if divergence == "cosine":
+        return 1.0 - F.cosine_similarity(
+            s_probs.view(s_probs.size(0), -1),
+            t_probs.view(t_probs.size(0), -1),
+            dim=-1).mean()
+    if divergence == "l1":
+        return (s_probs - t_probs).abs().mean()
+    raise ValueError(f"Unsupported divergence: {divergence}")
 
 
 def cross_modal_distillation_loss(logit_scale: torch.Tensor,
@@ -40,7 +78,8 @@ def cross_modal_distillation_loss(logit_scale: torch.Tensor,
                                   temperature: float = 2.0,
                                   divergence: str = "kl_forward"):
     """
-    Cross-modal distillation between teacher and student CLIP-like models.
+    Cross-modal distillation between teacher and student CLIP-like models,
+    computed in both directions (image->text and text->image) and averaged.
 
     Args:
         divergence: one of
@@ -51,48 +90,15 @@ def cross_modal_distillation_loss(logit_scale: torch.Tensor,
             - cosine:      1 - cosine similarity on probabilities
             - l1:          L1 distance on probabilities
     """
-    _, s_log_probs, s_probs = _logits_and_probs(
+    s_lp_i2t, s_p_i2t, s_lp_t2i, s_p_t2i = _logits_and_probs_bidir(
         logit_scale, student_img_feat, student_text_feat, temperature)
 
     with torch.no_grad():
-        _, t_log_probs, t_probs = _logits_and_probs(
+        t_lp_i2t, t_p_i2t, t_lp_t2i, t_p_t2i = _logits_and_probs_bidir(
             logit_scale, teacher_img_feat, teacher_text_feat, temperature)
 
-    if divergence == "kl_forward":
-        loss = F.kl_div(input=s_log_probs, target=t_probs,
-                        reduction="batchmean") * (temperature ** 2)
-
-    elif divergence == "kl_reverse":
-        # D_KL(student || teacher); keep target=s_probs so gradients flow to student.
-        loss = F.kl_div(input=t_log_probs, target=s_probs,
-                        reduction="batchmean") * (temperature ** 2)
-
-    elif divergence == "js":
-        # JS(P=teacher, Q=student) = 0.5 * KL(teacher || M) + 0.5 * KL(student || M)
-        # with M = 0.5 * (teacher + student).  Student probabilities must stay in the
-        # computational graph for gradients to propagate.
-        m_probs = 0.5 * (t_probs + s_probs)
-        m_log_probs = torch.log(m_probs.clamp_min(1e-12))
-        kl_t_m = F.kl_div(input=m_log_probs, target=t_probs,
-                          reduction="batchmean")
-        kl_s_m = F.kl_div(input=m_log_probs, target=s_probs,
-                          reduction="batchmean")
-        loss = 0.5 * (kl_t_m + kl_s_m) * (temperature ** 2)
-
-    elif divergence == "mse":
-        loss = F.mse_loss(s_probs, t_probs, reduction="mean")
-
-    elif divergence == "cosine":
-        # cosine similarity on flattened probability distributions
-        loss = 1.0 - F.cosine_similarity(
-            s_probs.view(s_probs.size(0), -1),
-            t_probs.view(t_probs.size(0), -1),
-            dim=-1).mean()
-
-    elif divergence == "l1":
-        loss = (s_probs - t_probs).abs().mean()
-
-    else:
-        raise ValueError(f"Unsupported divergence: {divergence}")
-
-    return loss
+    loss_i2t = _directional_divergence(
+        s_lp_i2t, s_p_i2t, t_lp_i2t, t_p_i2t, temperature, divergence)
+    loss_t2i = _directional_divergence(
+        s_lp_t2i, s_p_t2i, t_lp_t2i, t_p_t2i, temperature, divergence)
+    return 0.5 * (loss_i2t + loss_t2i)

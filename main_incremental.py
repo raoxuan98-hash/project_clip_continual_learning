@@ -956,6 +956,13 @@ def main(args):
                 trainer.model.vision_model.initialize_adapters_from_covariance(
                     trainer.covariance_history, window=args.basis_window,
                     set_p_to_identity=set_p_to_identity)
+                if trainer.has_text_lora and trainer.text_covariance_history:
+                    # LoRA-Null 对双塔对称：文本塔同样用历史零空间初始化，
+                    # history_init_only 时把 P 复位为单位阵。此前只对视觉塔
+                    # 初始化，文本塔带着持续 P 训练，实际是 LoRA-NF 混合体。
+                    trainer.model.text_model.initialize_adapters_from_covariance(
+                        trainer.text_covariance_history, window=args.basis_window,
+                        set_p_to_identity=set_p_to_identity)
             else:
                 logging.info("No covariance history yet, using default random init for Task 1")
 

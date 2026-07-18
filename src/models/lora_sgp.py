@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -519,6 +520,20 @@ class SGPBaseDoRA(nn.Module):
                 self.C.data.copy_(C_init)
                 self.B.data.copy_(B_init * scale)
 
+def _shared_input_group_key(name: str, share_qkv: bool) -> str:
+    """与 trainer 的协方差分组规则一致：share_qkv 时同层 q/k/v 归为一组。
+
+    update_projection_matrices / update_basis_matrices 必须按组构建一次并赋给
+    组内所有模块；按 id(module.P) 去重会在重绑定后让同组其余模块永久停留在
+    旧的单位阵占位上（q/k/v 逐任务才陆续生效的 bug）。
+    """
+    if share_qkv:
+        m = re.match(r"layer_(\d+)_attn_(q_proj|k_proj|v_proj)$", name)
+        if m:
+            return f"layer_{m.group(1)}_attn_qkv_shared"
+    return name
+
+
 class LoRACLIPVisionTransformer(nn.Module):
     def __init__(
         self,
@@ -645,19 +660,19 @@ class LoRACLIPVisionTransformer(nn.Module):
 
     @torch.no_grad()
     def update_projection_matrices(self, covariances: Dict[str, torch.Tensor]) -> None:
-        # 多个模块可能共享同一个 FixedProjection，只需构建一次 P
-        seen_proj_ids = set()
-        for name, cov in covariances.items():
+        # 同层 q/k/v 共享输入空间：按组构建一次 P，并把同一个 FixedProjection
+        # 赋给组内所有模块。不要按 id(module.P) 去重——重绑定会让同组其余
+        # 模块永久停留在旧的单位阵占位上。
+        groups: Dict[str, List[str]] = {}
+        for name in covariances:
             if name not in self.lora_modules:
                 continue
-            module = self.lora_modules[name]
-            proj_id = id(module.P)
-            if proj_id in seen_proj_ids:
-                continue
-            seen_proj_ids.add(proj_id)
+            groups.setdefault(_shared_input_group_key(name, self.share_qkv), []).append(name)
 
+        for names in groups.values():
+            module0 = self.lora_modules[names[0]]
             P = build_projection(
-                cov,
+                covariances[names[0]],
                 soft_projection=self.use_soft_projection,
                 weight_temp=self.weight_temp,
                 weight_kind=self.weight_kind,
@@ -666,33 +681,36 @@ class LoRACLIPVisionTransformer(nn.Module):
                 nsp_weight=self.nsp_weight)
 
             # 确保投影矩阵与 LoRA 模块在同一设备
-            P = P.to(device=module.A.device, dtype=module.A.dtype)
-            module.P = FixedProjection(P)
+            P = P.to(device=module0.A.device, dtype=module0.A.dtype)
+            shared_proj = FixedProjection(P)
+            for name in names:
+                self.lora_modules[name].P = shared_proj
 
     @torch.no_grad()
     def update_basis_matrices(self, covariances: Dict[str, torch.Tensor]) -> None:
         """为 basis 模式更新 U_h 并设置 basis_ready=True。
 
         只在 projection_param_mode 为 fixed_basis / core_basis 时有效。
+        同层 q/k/v 按组共享一份 U_h（与 update_projection_matrices 同规则）。
         """
         if self.projection_param_mode not in ["fixed_basis", "core_basis"]:
             return
         if self.basis_rank is None:
             return
 
-        # 共享 P 的模块也共享 U_h，只需计算一次
-        seen_uh_ids = set()
-        for name, cov in covariances.items():
+        groups: Dict[str, List[str]] = {}
+        for name in covariances:
             if name not in self.lora_modules:
                 continue
-            module = self.lora_modules[name]
-            uh_id = id(module.U_h)
-            if uh_id in seen_uh_ids:
-                continue
-            seen_uh_ids.add(uh_id)
-            U_h = compute_tail_basis(cov, k=self.basis_rank)
-            module.U_h = U_h.to(device=module.A.device, dtype=module.A.dtype)
-            module.basis_ready = torch.tensor(True)
+            groups.setdefault(_shared_input_group_key(name, self.share_qkv), []).append(name)
+
+        for names in groups.values():
+            module0 = self.lora_modules[names[0]]
+            U_h = compute_tail_basis(covariances[names[0]], k=self.basis_rank)
+            U_h = U_h.to(device=module0.A.device, dtype=module0.A.dtype)
+            for name in names:
+                self.lora_modules[name].U_h = U_h
+                self.lora_modules[name].basis_ready = torch.tensor(True)
 
     @torch.no_grad()
     def initialize_adapters_from_covariance(
@@ -995,18 +1013,17 @@ class LoRACLIPTextTransformer(nn.Module):
 
     def update_projection_matrices(self, covariances: Dict[str, torch.Tensor]) -> None:
         self._ensure_merged_before_rebuild()
-        # 多个模块可能共享同一个 FixedProjection，只需构建一次 P
-        seen_proj_ids = set()
-        for name, cov in covariances.items():
+        # 同层 q/k/v 按组构建一次 P，并赋给组内所有模块（见视觉版的说明）。
+        groups: Dict[str, List[str]] = {}
+        for name in covariances:
             if name not in self.lora_modules:
                 continue
-            module = self.lora_modules[name]
-            proj_id = id(module.P)
-            if proj_id in seen_proj_ids:
-                continue
-            seen_proj_ids.add(proj_id)
+            groups.setdefault(_shared_input_group_key(name, self.share_qkv), []).append(name)
+
+        for names in groups.values():
+            module0 = self.lora_modules[names[0]]
             P = build_projection(
-                cov,
+                covariances[names[0]],
                 soft_projection=self.use_soft_projection,
                 weight_temp=self.weight_temp,
                 weight_kind=self.weight_kind,
@@ -1014,7 +1031,10 @@ class LoRACLIPTextTransformer(nn.Module):
                 nsp_eps=self.nsp_eps,
                 nsp_weight=self.nsp_weight,
             )
-            self.lora_modules[name].P = FixedProjection(P)
+            P = P.to(device=module0.A.device, dtype=module0.A.dtype)
+            shared_proj = FixedProjection(P)
+            for name in names:
+                self.lora_modules[name].P = shared_proj
 
     @torch.no_grad()
     def update_basis_matrices(self, covariances: Dict[str, torch.Tensor]) -> None:
@@ -1022,19 +1042,61 @@ class LoRACLIPTextTransformer(nn.Module):
             return
         if self.basis_rank is None:
             return
-        # 共享 P 的模块也共享 U_h，只需计算一次
-        seen_uh_ids = set()
+        # 同层 q/k/v 按组共享一份 U_h（与 update_projection_matrices 同规则）。
+        groups: Dict[str, List[str]] = {}
+        for name in covariances:
+            if name not in self.lora_modules:
+                continue
+            groups.setdefault(_shared_input_group_key(name, self.share_qkv), []).append(name)
+
+        for names in groups.values():
+            module0 = self.lora_modules[names[0]]
+            U_h = compute_tail_basis(covariances[names[0]], k=self.basis_rank)
+            U_h = U_h.to(device=module0.A.device, dtype=module0.A.dtype)
+            for name in names:
+                self.lora_modules[name].U_h = U_h
+                self.lora_modules[name].basis_ready = torch.tensor(True)
+
+    @torch.no_grad()
+    def initialize_adapters_from_covariance(
+        self,
+        covariances: Dict[str, torch.Tensor],
+        window: str = "tail",
+        s_ratio: float = 0.33,
+        set_p_to_identity: bool = True,
+    ) -> None:
+        """Proj-Σ 初始化文本塔 LoRA 适配器（与视觉塔版本对称）。
+
+        对每层：Σ 特征分解 → 取 V_small → BA_init = W @ V_small @ V_small^T
+        → SVD → A_init, B_init → W' = W - BA_init。
+
+        Args:
+            covariances: Dict[name, cov_matrix]
+            window: 'tail'（最小特征值）或 'middle'（中间特征值）
+            s_ratio: 'middle' 窗口起始位置比例
+            set_p_to_identity: True 时把 P 设为单位阵（hist_null_init_only）；
+                               False 时保留当前 P（hist_null_init_runtime）。
+        """
+        self._ensure_merged_before_rebuild()
+
         for name, cov in covariances.items():
             if name not in self.lora_modules:
                 continue
+
             module = self.lora_modules[name]
-            uh_id = id(module.U_h)
-            if uh_id in seen_uh_ids:
-                continue
-            seen_uh_ids.add(uh_id)
-            U_h = compute_tail_basis(cov, k=self.basis_rank)
-            module.U_h = U_h.to(device=module.A.device, dtype=module.A.dtype)
-            module.basis_ready = torch.tensor(True)
+            W = module.get_effective_weight()
+
+            A_init, B_init, W_residual = compute_proj_init(
+                W, cov, self.r, window=window, s_ratio=s_ratio)
+
+            module.set_effective_weight(W_residual)
+            module.set_lora_init(A_init, B_init)
+
+            if set_p_to_identity:
+                d = cov.size(0)
+                device = module.A.device
+                dtype = module.A.dtype
+                module.P = FixedProjection(torch.eye(d, device=device, dtype=dtype))
 
     def forward(self, input_ids=None, attention_mask=None, **kwargs):
         kwargs.setdefault('output_attentions', False)
