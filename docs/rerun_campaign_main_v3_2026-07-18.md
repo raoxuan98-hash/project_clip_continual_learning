@@ -178,3 +178,14 @@ Wave 0（review+smoke）→ Wave A → Wave B ∥ Wave C（GPU 空闲即插）�
 - 已知边界：SigLIP2 为 softmax 口径（计划 §6 已记 2-6% ZS 异常列现象，照实记录）。✓
 
 **统一项**：所有分支均带 `--reference_dataset flickr30k_train_sub8k`（§7 修订后）、`--no-alpha_sensitivity`、检索 canonical roots；waveC_lada 不经 main_incremental，不适用参考集/检索约束（官方代码原样）。
+
+---
+
+## 9. E6 alpha 离线扫描可行性核查与执行设计（2026-07-19）
+
+**结论：可行，无需改动训练代码，但需 1 个补充 artifact run。**
+
+- `main_incremental.py` 的 `--save_step_artifacts`（line 771）可在不打断 inline 评估的情况下，每个任务后保存完整 artifact（model_state_dict、RGDA stats、多中心统计、文本特征、类别名/offset）；正式战役 BASE_ARGS 未开此开关（59 runs × 10 artifact 磁盘代价过大，不全局开启）。
+- 消费端已有 `scripts/evaluate_incremental_artifacts.py`（async worker，按 artifact 内配置评估）；alpha 扫描 = 对同一 artifact 覆盖 `args.alpha` 网格重评（Wave F 写一个小 wrapper，需 val split——`get_xtail_trainloader` 第二返回值即 val loader）。
+- **执行设计**：Wave A 验收后，在 GPU 空档启动 1 个补充 run（配置与 waveA__lora_nf__16shot__seed43 完全一致 + `--save_step_artifacts --async_eval_dir experiments/paper_formal/WaveF_offline/async_e6`，输出目录 `WaveF_offline/`）。该 run 同时充当 seed43 可复现性校验（其 JSON 应与 waveA seed43 完全一致）。磁盘预算：10 artifact × ~0.5-1GB ≈ 5-10GB。
+- Frozen 分类行：`scripts/eval_frozen_zeroshot.py`（cd9be8d），同一空档窗口执行。
