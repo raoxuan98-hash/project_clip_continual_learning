@@ -69,6 +69,10 @@ class LoRANSPTrainer:
         self.covariance_counts: Dict[str, int] = {}
         self.text_covariance_counts: Dict[str, int] = {}
 
+        # Gradient-projected LoRA：独立于前向 P 的梯度投影矩阵
+        self.gradient_projection_matrices: Dict[str, torch.Tensor] = {}
+        self.text_gradient_projection_matrices: Dict[str, torch.Tensor] = {}
+
         # 加载图像协方差历史
         if self.covariance_history and self.has_vision_lora:
             logging.info(f"Loading image covariance history with {len(self.covariance_history)} layers")
@@ -332,6 +336,67 @@ class LoRANSPTrainer:
             new_covariances, self.text_covariance_history, self.text_covariance_counts,
             update_fn, "text")
 
+    def update_gradient_projection_matrices(self):
+        """从协方差历史构建梯度投影矩阵（与 forward P 独立，Gradient-projected LoRA 用）。"""
+        from src.models.lora_sgp import build_projection
+
+        nsp_eps = getattr(self.args, 'nsp_eps', 0.20)
+        nsp_weight = getattr(self.args, 'nsp_weight', 0.02)
+        use_soft = getattr(self.args, 'use_soft_projection', False)
+        weight_temp = getattr(self.args, 'weight_temp', 1.0)
+        weight_kind = getattr(self.args, 'weight_kind', 'log1p')
+        weight_p = getattr(self.args, 'weight_p', 1.0)
+
+        for tag, cov_history, storage in [
+            ("image", self.covariance_history, self.gradient_projection_matrices),
+            ("text", self.text_covariance_history, self.text_gradient_projection_matrices),
+        ]:
+            if not cov_history:
+                continue
+            storage.clear()
+            for name, cov in cov_history.items():
+                P = build_projection(
+                    cov.to(self.device),
+                    soft_projection=use_soft,
+                    weight_temp=weight_temp,
+                    weight_kind=weight_kind,
+                    weight_p=weight_p,
+                    nsp_eps=nsp_eps,
+                    nsp_weight=nsp_weight,
+                )
+                storage[name] = P.detach().cpu()
+            logging.info("  [%s] Gradient projection matrices built: %d layers", tag, len(storage))
+
+    def _apply_gradient_projection(self):
+        """将梯度投影矩阵作用于 LoRA A 的梯度（Gradient-projected LoRA）。
+
+        投影对象是 A 的梯度（行空间），B 的梯度不投影；在前向不加 P 的标准
+        LoRA 前向/反向之后、optimizer step 之前调用。
+        """
+        import re
+
+        def _grad_proj_key(name):
+            m = re.match(r"layer_(\d+)_attn_(q_proj|k_proj|v_proj)$", name)
+            if m:
+                return f"layer_{m.group(1)}_attn_qkv_shared"
+            return name
+
+        for tag, lora_modules, matrices in [
+            ("vision", self.model.vision_model.lora_modules if self.has_vision_lora else {},
+             self.gradient_projection_matrices),
+            ("text", self.model.text_model.lora_modules if self.has_text_lora else {},
+             self.text_gradient_projection_matrices),
+        ]:
+            for module_name, module in lora_modules.items():
+                key = module_name
+                if key not in matrices:
+                    key = _grad_proj_key(module_name)
+                if key not in matrices:
+                    continue
+                P = matrices[key].to(self.device)
+                if hasattr(module, 'A') and module.A is not None and module.A.grad is not None:
+                    module.A.grad = module.A.grad @ P
+
     def _apply_covariance_update(self, new_covariances, history_dict, count_dict, update_fn, tag):
         """通用协方差等权平均 + 投影矩阵更新"""
         updated, new = 0, 0
@@ -391,7 +456,8 @@ class LoRANSPTrainer:
 
     def train(self, train_loader, class_names, reference_loader,
               eval_interval=0, eval_callback=None, aux_weight=0.0,
-              train_text_encoder=None, text_lr=None, iterations=None):
+              train_text_encoder=None, text_lr=None, iterations=None,
+              use_gradient_projection=False):
         """
         训练模型
 
@@ -638,10 +704,15 @@ class LoRANSPTrainer:
             optimizer.zero_grad()
             if scaler is not None:
                 scaler.scale(loss).backward()
+                if use_gradient_projection:
+                    scaler.unscale_(optimizer)
+                    self._apply_gradient_projection()
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                if use_gradient_projection:
+                    self._apply_gradient_projection()
                 optimizer.step()
             scheduler.step()
 

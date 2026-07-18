@@ -581,6 +581,10 @@ def parse_args():
                         help="Weight parameter for NSP.")
     parser.add_argument("--use_soft_projection", action="store_true", default=False,
                         help="Use soft projection (eigenvalue-weighted) instead of hard subspace projection.")
+    parser.add_argument("--use_gradient_projection", action="store_true", default=False,
+                        help="Use gradient projection (GPM-style) instead of forward NSP filtering. "
+                             "When enabled, LoRA forward is standard (no P), and gradients are "
+                             "projected via NSP after backward.")
     parser.add_argument("--weight_temp", type=float, default=1.0,
                         help="Temperature parameter for weight.")
     parser.add_argument("--weight_kind", type=str, default="log1p")
@@ -985,19 +989,25 @@ def main(args):
                               aux_weight=args.aux_weight,
                               train_text_encoder=train_text_this_task,
                               text_lr=text_lr,
-                              iterations=task_train_iterations)
+                              iterations=task_train_iterations,
+                              use_gradient_projection=getattr(args, 'use_gradient_projection', False))
         _RUN_TIMER.stop("train")
 
         # --- 2d. 任务后处理：合入 + 协方差累积 ---
         _RUN_TIMER.start("nsp_and_merge")
 
         # 是否需要更新 runtime projection / basis
+        # 梯度投影模式下，不更新前向 P（前向是标准 LoRA），但更新梯度投影矩阵
+        use_grad_proj = getattr(args, 'use_gradient_projection', False)
         need_projection = (
-            args.projection_param_mode == "full" or
-            args.null_init_mode == "history_init_runtime"
+            not use_grad_proj and (
+                args.projection_param_mode == "full" or
+                args.null_init_mode == "history_init_runtime"
+            )
         )
-        need_basis = args.projection_param_mode in ["fixed_basis", "core_basis"]
-        print(f"\n=== Task post-processing: projection={need_projection}, basis={need_basis} ===")
+        need_basis = not use_grad_proj and args.projection_param_mode in ["fixed_basis", "core_basis"]
+        print(f"\n=== Task post-processing: projection={need_projection}, basis={need_basis}, "
+              f"grad_proj={use_grad_proj} ===")
 
         text_covariances = None
         if trainer.has_vision_lora:
@@ -1017,6 +1027,10 @@ def main(args):
                 text_covariances,
                 update_projection=need_projection,
                 update_basis=need_basis)
+
+        # 梯度投影模式：从协方差历史构建独立的梯度投影矩阵
+        if use_grad_proj:
+            trainer.update_gradient_projection_matrices()
 
         _RUN_TIMER.stop("nsp_and_merge")
 
