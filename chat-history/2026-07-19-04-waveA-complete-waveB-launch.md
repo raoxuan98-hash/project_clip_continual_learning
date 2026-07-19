@@ -7,12 +7,12 @@
 
 ## 1. Wave A 验收（终验）
 
-- 12/12 runs 全部 rc=0 完成， 12/12 PASS。
+- 12/12 runs 全部 rc=0 完成，`audit_campaign_run.py --require-reference` 12/12 PASS。
 - 配置/变体覆盖：lora_nf ×3、lora ×3、lora_null ×3、gradproj ×3（seed 42/43/44）。
 
 ## 2. 事故记录：启动器语法错误（无实际损失）
 
-- 现象：6 个 waveA 启动器在完成全部 run 后报 。
+- 现象：6 个 waveA 启动器在完成全部 run 后报 `rerun_campaign.sh: line 163: syntax error`。
 - 根因：04:05 提交 d323470（waveC_lada 分支）时，6 个启动器正在运行；bash 按字节偏移增量读脚本，文件变更导致续读错位。**教训：启动器运行期间不得修改 rerun_campaign.sh；后续 wave 的脚本修改必须在全部启动器结束后进行，或先复制为新文件再改。**
 - 影响：仅启动器收尾阶段报错，12/12 结果完整；当前脚本 bash -n 通过。
 
