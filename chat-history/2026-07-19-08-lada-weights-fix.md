@@ -4,7 +4,7 @@
 **会话概况**: LADA 16-shot 首启失败（clip 权重下载 DNS 失败），经转换脚本与官方重下两路解决。
 
 ## 1. 故障
-- LADA 官方代码  需 OpenAI JIT 权重（~/.cache/clip/ViT-B-16.pt），本机缓存为空且首次下载 DNS 解析失败（rc=1，3 runs 全崩于 aircraft）。
+- LADA 官方代码 `load_clip_to_cpu` 需 OpenAI JIT 权重（~/.cache/clip/ViT-B-16.pt），本机缓存为空且首次下载 DNS 解析失败（rc=1，3 runs 全崩于 aircraft）。
 
 ## 2. 解决
 - 编写 scripts/convert_hf_to_openai_clip.py：HF safetensors → OpenAI 命名 state_dict（in_proj q/k/v 拼接、投影转置、ln/mlp 映射），经 LADA build_model 严格加载 + HF 特征比对（cos=1.0）验证。
