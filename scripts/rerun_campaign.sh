@@ -3,7 +3,9 @@
 #
 # 用法:
 #   bash scripts/rerun_campaign.sh <wave> <gpu>
-#   wave: smoke | waveA | waveB | waveC | waveC_lada | waveD | waveE
+#   wave: smoke | waveA | waveB | waveC | waveC2 | waveC_lada | waveD | waveE
+#   4 GPU 上限（GPU0-3）：waveC 先行 4 runs，waveC2 接力 lora fs s43/44；
+#   waveC_lada / waveD 已按 4 GPU 重排。
 #   每个 wave 内部按 GPU 静态分工（见各分支），同一 GPU 内串行；
 #   已有 _ens_results.json 的 run 自动跳过（断点续跑）。
 set -u
@@ -111,25 +113,35 @@ waveB)
   esac
   ;;
 waveC)
-  # 6 runs = 2 配置 × 3 seeds（full-shot）
+  # 6 runs = 2 配置 × 3 seeds（full-shot）；最多 4 GPU：GPU0-3 先行，lora s43/44 由 waveC2 接力
   case $GPU in
     0) run_one 0 WaveC_fullshot waveC__lora_nf__fs__seed42 $LORA_NF --full_shot --seed 42 ;;
     1) run_one 1 WaveC_fullshot waveC__lora_nf__fs__seed43 $LORA_NF --full_shot --seed 43 ;;
     2) run_one 2 WaveC_fullshot waveC__lora_nf__fs__seed44 $LORA_NF --full_shot --seed 44 ;;
     3) run_one 3 WaveC_fullshot waveC__lora__fs__seed42 $LORA_VANILLA --full_shot --seed 42 ;;
-    4) run_one 4 WaveC_fullshot waveC__lora__fs__seed43 $LORA_VANILLA --full_shot --seed 43 ;;
-    5) run_one 5 WaveC_fullshot waveC__lora__fs__seed44 $LORA_VANILLA --full_shot --seed 44 ;;
+    *) echo "[waveC gpu$GPU] 无分配（4 GPU 上限）" ;;
+  esac
+  ;;
+waveC2)
+  # waveC 接力：lora full-shot 剩余 2 runs（GPU0/1）
+  case $GPU in
+    0) run_one 0 WaveC_fullshot waveC__lora__fs__seed43 $LORA_VANILLA --full_shot --seed 43 ;;
+    1) run_one 1 WaveC_fullshot waveC__lora__fs__seed44 $LORA_VANILLA --full_shot --seed 44 ;;
+    *) echo "[waveC2 gpu$GPU] 无分配" ;;
   esac
   ;;
 waveC_lada)
-  # 官方 LADA 基线 6 runs（3 seeds × {16shot, fullshot}），每 GPU 1 run
+  # 官方 LADA 基线 6 runs（3 seeds × {16shot, fullshot}），最多 4 GPU，每 GPU 串行
   case $GPU in
-    0) bash scripts/run_lada_official_campaign.sh 16shot 0 42 ;;
-    1) bash scripts/run_lada_official_campaign.sh 16shot 1 43 ;;
+    0)
+      bash scripts/run_lada_official_campaign.sh 16shot 0 42
+      bash scripts/run_lada_official_campaign.sh fullshot 0 43 ;;
+    1)
+      bash scripts/run_lada_official_campaign.sh 16shot 1 43
+      bash scripts/run_lada_official_campaign.sh fullshot 1 44 ;;
     2) bash scripts/run_lada_official_campaign.sh 16shot 2 44 ;;
     3) bash scripts/run_lada_official_campaign.sh fullshot 3 42 ;;
-    4) bash scripts/run_lada_official_campaign.sh fullshot 4 43 ;;
-    5) bash scripts/run_lada_official_campaign.sh fullshot 5 44 ;;
+    *) echo "[waveC_lada gpu$GPU] 无分配（4 GPU 上限）" ;;
   esac
   ;;
 waveD)
@@ -138,7 +150,11 @@ waveD)
     0)
       run_one 0 WaveD_hparams waveD__cdw0p5__16shot__seed43 $LORA_NF --cd_weight 0.5 --seed 43
       run_one 0 WaveD_hparams waveD__cdw1p0__16shot__seed43 $LORA_NF --cd_weight 1.0 --seed 43
-      run_one 0 WaveD_hparams waveD__cdw4p0__16shot__seed43 $LORA_NF --cd_weight 4.0 --seed 43 ;;
+      run_one 0 WaveD_hparams waveD__cdw4p0__16shot__seed43 $LORA_NF --cd_weight 4.0 --seed 43
+      run_one 0 WaveD_hparams waveD__layers_attn__16shot__seed43 $LORA_NF \
+        --lora_target_modules q_proj,k_proj,v_proj,out_proj --seed 43
+      run_one 0 WaveD_hparams waveD__layers_ffn__16shot__seed43 $LORA_NF \
+        --lora_target_modules fc1,fc2 --seed 43 ;;
     1)
       run_one 1 WaveD_hparams waveD__cdt1p0__16shot__seed43 $LORA_NF --cd_temperature 1.0 --seed 43
       run_one 1 WaveD_hparams waveD__cdt2p0__16shot__seed43 $LORA_NF --cd_temperature 2.0 --seed 43
@@ -153,10 +169,7 @@ waveD)
       run_one 3 WaveD_hparams waveD__nspw0p08__16shot__seed43 $LORA_NF --nsp_weight 0.08 --seed 43
       run_one 3 WaveD_hparams waveD__nspw0p16__16shot__seed43 $LORA_NF --nsp_weight 0.16 --seed 43 ;;
     4)
-      run_one 4 WaveD_hparams waveD__layers_attn__16shot__seed43 $LORA_NF \
-        --lora_target_modules q_proj,k_proj,v_proj,out_proj --seed 43
-      run_one 4 WaveD_hparams waveD__layers_ffn__16shot__seed43 $LORA_NF \
-        --lora_target_modules fc1,fc2 --seed 43 ;;
+      echo "[waveD gpu4] 无分配（4 GPU 上限，layers 已并入 gpu0）" ;;
     5)
       echo "[waveD gpu5] 无分配" ;;
   esac

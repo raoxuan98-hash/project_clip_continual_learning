@@ -189,3 +189,16 @@ Wave 0（review+smoke）→ Wave A → Wave B ∥ Wave C（GPU 空闲即插）�
 - 消费端已有 `scripts/evaluate_incremental_artifacts.py`（async worker，按 artifact 内配置评估）；alpha 扫描 = 对同一 artifact 覆盖 `args.alpha` 网格重评（Wave F 写一个小 wrapper，需 val split——`get_xtail_trainloader` 第二返回值即 val loader）。
 - **执行设计**：Wave A 验收后，在 GPU 空档启动 1 个补充 run（配置与 waveA__lora_nf__16shot__seed43 完全一致 + `--save_step_artifacts --async_eval_dir experiments/paper_formal/WaveF_offline/async_e6`，输出目录 `WaveF_offline/`）。该 run 同时充当 seed43 可复现性校验（其 JSON 应与 waveA seed43 完全一致）。磁盘预算：10 artifact × ~0.5-1GB ≈ 5-10GB。
 - Frozen 分类行：`scripts/eval_frozen_zeroshot.py`（cd9be8d），同一空档窗口执行。
+
+---
+
+## 10. 修订（2026-07-19 14:35）：full-shot 搁置 + 4 GPU 上限 + full_shot bug 修复
+
+**用户决策**：full-shot 实验全部搁置（Wave C LoRA full-shot 6 runs、LADA full-shot 3 runs），优先收集 16-shot 的 LADA 基线、Wave D 超参、Wave E SigLIP2、Wave F 离线产物。GPU 上限 4 张（0-3）。
+
+**full_shot bug**：`main_incremental.py:909` 传 `num_shots=None`，loader `generate_fewshot_dataset` 期望 `num_shots<1` 表全量 → TypeError，Wave C 13:43 的 6 runs 全部秒崩（未产生任何结果）。修复：`num_shots = 0 if args.full_shot`。full-shot smoke（2 任务 200 iters）验证通过后被用户中止（full-shot 整体搁置）。
+
+**编排调整**：
+- 启动器已按 4 GPU 重排：waveC（GPU0-3 四跑 + waveC2 接力）、waveC_lada（GPU0-3 串行两段）、waveD（layers×2 并入 gpu0，GPU4/5 无分配）。
+- 当前：LADA 16-shot ×3（GPU 0-2）+ waveD nspw×4（GPU 3）并行；LADA 完成后 waveD 剩余 11 runs 上 GPU 0-2；然后 waveE（GPU 0-2）、waveF。
+- 教训记录：启动器语法错误事故（§见 chat-history 2026-07-19-04）之后，本次脚本修改确认在无启动器存活时进行。

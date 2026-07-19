@@ -906,7 +906,7 @@ def main(args):
         task_class_names = []
         for d_name in task_datasets:
             train_transform, test_transform = get_transforms(d_name)
-            num_shots = None if args.full_shot else args.num_shots
+            num_shots = 0 if args.full_shot else args.num_shots
             tr_loader, _, _, c_names = get_xtail_trainloader(
                 root=args.root, dataset_name=d_name,
                 transform_train=train_transform, transform_test=test_transform,
