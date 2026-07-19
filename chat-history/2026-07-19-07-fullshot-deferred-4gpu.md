@@ -8,11 +8,11 @@
 - GPU 上限 4 张（0-3）；机器上有其他用户进程（GPU 1/2 有少量外部占用）。
 
 ## 2. full_shot bug（13:43 Wave C 6 runs 秒崩的原因）
-- main_incremental.py:909  → loader 期望  表全量 → TypeError。
+- main_incremental.py:909 `num_shots=None` → loader 期望 `num_shots<1` 表全量 → TypeError。
 - 修复为 ；2 任务 full-shot smoke 验证训练/后处理通过（用户随后决定整体搁置 full-shot）。
 
 ## 3. 当前编排（14:35 启动）
-- LADA 官方 16-shot ×3 seeds：GPU 0/1/2（）。
+- LADA 官方 16-shot ×3 seeds：GPU 0/1/2（`run_lada_official_campaign.sh 16shot`）。
 - Wave D 超参扫描：GPU 3 nspw×4 先行；LADA 完成后 GPU 0-2 接 cdw×3+layers×2 / cdt×3 / eps×3。
 - 巡检 cron 更新为 2585848c（30 分钟）。
 
