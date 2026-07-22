@@ -3,7 +3,7 @@
 #
 # 用法:
 #   bash scripts/rerun_campaign.sh <wave> <gpu>
-#   wave: smoke | waveA | waveB | waveC | waveC2 | waveC_lada | waveD | waveE
+#   wave: smoke | waveA | waveB | waveC | waveC2 | waveC_lada | waveD | waveE | waveF
 #   4 GPU 上限（GPU0-3）：waveC 先行 4 runs，waveC2 接力 lora fs s43/44；
 #   waveC_lada / waveD 已按 4 GPU 重排。
 #   每个 wave 内部按 GPU 静态分工（见各分支），同一 GPU 内串行；
@@ -185,6 +185,12 @@ waveE)
     *) echo "[waveE gpu$GPU] 无分配（仅 GPU 0/1/3 -> seeds 42/43/44）"; exit 0 ;;
   esac
   run_one $GPU WaveE_siglip2 waveE__siglip2_lora_nf__16shot__seed${SEED} $LORA_NF --seed ${SEED}
+  ;;
+waveF)
+  # 1 run：E6 alpha 离线扫描的 artifact 补充 run（兼作 waveA seed43 复现校验）
+  # 配置与 waveA__lora_nf__16shot__seed43 完全一致 + 每任务后保存评估 artifact
+  run_one $GPU WaveF_offline waveF__lora_nf__16shot__seed43_artifacts $LORA_NF --seed 43 \
+    --save_step_artifacts --async_eval_dir experiments/paper_formal/WaveF_offline/async_e6
   ;;
 *)
   echo "unknown wave: $WAVE"; exit 1 ;;
