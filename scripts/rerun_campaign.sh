@@ -175,9 +175,16 @@ waveD)
   esac
   ;;
 waveE)
-  # 3 runs（SigLIP2），GPU0-2 各 1 run；模型目录由调用前准备
+  # 3 runs（SigLIP2），seeds 42/43/44；模型目录由调用前准备
+  # GPU2 被服务器上其他项目占用 -> 改在 GPU 0/1/3 启动，seed 显式映射（不再用 41+GPU）
   export CLIP_MODEL_NAME=${SIGLIP2_MODEL_DIR:-/mnt/raoxuan/models/siglip2-base-patch16-224}
-  run_one $GPU WaveE_siglip2 waveE__siglip2_lora_nf__16shot__seed$((41+GPU)) $LORA_NF --seed $((41+GPU))
+  case $GPU in
+    0) SEED=42 ;;
+    1) SEED=43 ;;
+    3) SEED=44 ;;
+    *) echo "[waveE gpu$GPU] 无分配（仅 GPU 0/1/3 -> seeds 42/43/44）"; exit 0 ;;
+  esac
+  run_one $GPU WaveE_siglip2 waveE__siglip2_lora_nf__16shot__seed${SEED} $LORA_NF --seed ${SEED}
   ;;
 *)
   echo "unknown wave: $WAVE"; exit 1 ;;
