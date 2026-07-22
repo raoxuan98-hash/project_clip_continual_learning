@@ -1,6 +1,7 @@
 # In[]
 from torchvision import transforms
 from scenario_datasets.build_functions import build_cur_task_data_loader, build_TAIL_testloader
+from src.models.backbone_utils import is_siglip2_model_name
 import os
 import csv
 from collections import defaultdict
@@ -11,10 +12,11 @@ import torch
 from torch.utils.data import DataLoader
 
 # In[]
-def get_transforms(dataset_name, resolution=224):
+def get_transforms(dataset_name, resolution=224, model_name=None):
     """获取图像变换"""
-    mean = (0.48145466, 0.4578275, 0.40821073)
-    std = (0.26862954, 0.26130258, 0.27577711)
+    is_siglip2 = is_siglip2_model_name(model_name)
+    mean = (0.5, 0.5, 0.5) if is_siglip2 else (0.48145466, 0.4578275, 0.40821073)
+    std = (0.5, 0.5, 0.5) if is_siglip2 else (0.26862954, 0.26130258, 0.27577711)
     print("mean:", mean)
     print("std:", std)
 

@@ -475,6 +475,11 @@ def parse_args():
                         help="List of all ID datasets (for reference).")
     parser.add_argument("--root", type=str, default="/data1/open_datasets/X-TAIL",
                         help="Root directory of the dataset.")
+    parser.add_argument("--model_name", type=str,
+                        default=os.environ.get("CLIP_MODEL_NAME", "openai/clip-vit-base-patch16"),
+                        help="Hugging Face dual-encoder checkpoint (hub id or local dir). "
+                             "Defaults to the CLIP_MODEL_NAME env var; the supported "
+                             "robustness backbone is google/siglip2-base-patch16-224.")
     parser.add_argument("--num_shots", type=int, default=16,
                         help="Number of shots for few-shot learning.")
     parser.add_argument("--full_shot", action="store_true", default=False,
@@ -857,7 +862,7 @@ def main(args):
     eval_bs = args.eval_batch_size if args.eval_batch_size is not None else args.batch_size
     for task_datasets in args.dataset_sequence:
         d_name = task_datasets[0]
-        _, test_transform = get_transforms(d_name)
+        _, test_transform = get_transforms(d_name, model_name=args.model_name)
         _, _, te_loader, c_names = get_xtail_trainloader(
             root=args.root, dataset_name=d_name,
             transform_train=None, transform_test=test_transform,
@@ -905,7 +910,7 @@ def main(args):
         train_loaders = []
         task_class_names = []
         for d_name in task_datasets:
-            train_transform, test_transform = get_transforms(d_name)
+            train_transform, test_transform = get_transforms(d_name, model_name=args.model_name)
             num_shots = 0 if args.full_shot else args.num_shots
             tr_loader, _, _, c_names = get_xtail_trainloader(
                 root=args.root, dataset_name=d_name,
@@ -1062,7 +1067,7 @@ def main(args):
         label_offset = sum(len(c_names) for c_names in history_class_names)
 
         for d_name in task_datasets:
-            train_transform, test_transform = get_transforms(d_name)
+            train_transform, test_transform = get_transforms(d_name, model_name=args.model_name)
             tr_loader, tr4update, _, c_names = get_xtail_trainloader(
                 root=args.root, dataset_name=d_name,
                 transform_train=train_transform, transform_test=test_transform,
@@ -1316,7 +1321,9 @@ def main(args):
                 ds_root = retrieval_roots.get(ds_name, args.retrieval_root)
                 if ds_name not in main._retrieval_datasets_cache:
                     try:
-                        ds = load_retrieval_dataset(ds_name, ds_root, args.retrieval_max_images)
+                        ds = load_retrieval_dataset(
+                            ds_name, ds_root, args.retrieval_max_images,
+                            model_name=args.model_name)
                         main._retrieval_datasets_cache[ds_name] = ds
                     except FileNotFoundError as e:
                         logging.warning("Skipping retrieval dataset %s at %s: %s", ds_name, ds_root, e)

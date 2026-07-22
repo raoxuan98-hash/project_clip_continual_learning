@@ -11,6 +11,13 @@ import math
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 from src.models.clip import get_clip_model
+from src.models.backbone_utils import (
+    embedding_dim,
+    encode_image_features,
+    encode_text_features,
+    is_siglip_family,
+    tokenize_texts,
+)
 from src.models.utils import feature_distillation_loss, cross_modal_distillation_loss
 
 
@@ -86,27 +93,19 @@ class LoRANSPTrainer:
 
     def _tokenize_texts(self, text):
         """CPU tokenization（可被缓存复用）。"""
-        return self.processor(text=text, return_tensors="pt", padding=True, truncation=True)
+        return tokenize_texts(self.processor, text, model=self.model)
 
     def _encode_text_from_inputs(self, text_inputs):
         """从已 tokenize 的输入直接过 text encoder。"""
         text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
-        text_outputs = self.model.text_model(**text_inputs)
-        if hasattr(text_outputs, 'pooler_output') and text_outputs.pooler_output is not None:
-            pooled = text_outputs.pooler_output
-        elif hasattr(text_outputs, 'last_hidden_state'):
-            pooled = text_outputs.last_hidden_state[:, -1, :]
-        else:
-            pooled = text_outputs[1] if isinstance(text_outputs, tuple) else text_outputs
-        text_features = self.model.text_projection(pooled)
-        return text_features
+        return encode_text_features(self.model, text_inputs)
 
     def encode_text(self, text):
         text_inputs = self._tokenize_texts(text)
         return self._encode_text_from_inputs(text_inputs)
 
     def encode_image(self, img):
-        return self.model.get_image_features(img)
+        return encode_image_features(self.model, img)
 
     def zeroshot_classifier(self, classnames, templates, use_grad=False,
                             precomputed_text_inputs=None):
@@ -216,7 +215,10 @@ class LoRANSPTrainer:
         total_observations = 0
         for batch_data in tqdm(data_iter, desc=desc, leave=False):
             batch_input = batch_data[0] if isinstance(batch_data, (tuple, list)) else batch_data
-            batch_input = batch_input.to(self.device)
+            if isinstance(batch_input, dict):
+                batch_input = {key: value.to(self.device) for key, value in batch_input.items()}
+            else:
+                batch_input = batch_input.to(self.device)
             _ = forward_fn(batch_input)
 
             for gkey in groups:
@@ -277,6 +279,20 @@ class LoRANSPTrainer:
             all_texts.extend([template(classname_clean) for template in templates])
 
         batch_size = self.args.batch_size
+        if is_siglip_family(self.model):
+            # SigLIP 文本塔：固定 64 长度 tokenize（无 attention_mask 约定），
+            # 直接用完整 tokenizer 输出前向，协方差 hook 取 LoRA 模块输入。
+            text_batches = []
+            for i in range(0, len(all_texts), batch_size):
+                text_batches.append(self._tokenize_texts(all_texts[i:i + batch_size]))
+            return self._extract_covariances_from_modules(
+                lora_modules=self.model.text_model.lora_modules,
+                forward_fn=lambda text_inputs: self.model.text_model(
+                    **{key: value.to(self.device) for key, value in text_inputs.items()}),
+                data_iter=text_batches,
+                desc="Collecting text features",
+            )
+
         text_batches = []
         for i in range(0, len(all_texts), batch_size):
             batch_texts = all_texts[i:i + batch_size]
@@ -520,7 +536,7 @@ class LoRANSPTrainer:
             "Task train schedule: vision_lora=%s, text_adapter=%s, train_text=%s, text_lr=%.6g",
             self.has_vision_lora, self.has_text_adapter, text_grad_enabled, text_lr if text_grad_enabled else 0.0)
         if aux_weight > 0:
-            feature_dim = self.model.config.projection_dim
+            feature_dim = embedding_dim(self.model)
             self.aux_head = nn.Linear(feature_dim, n_classes, bias=False).to(self.device)
             param_groups.append({'params': self.aux_head.parameters(), 'lr': 5e-3})
             optimizer = self._create_optimizer(param_groups)
@@ -592,7 +608,7 @@ class LoRANSPTrainer:
                 # --- 前向传播 ---
                 vision_ctx = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
                 with vision_ctx:
-                    proj_feats = self.model.get_image_features(images)
+                    proj_feats = encode_image_features(self.model, images)
                 norm_feats = proj_feats / proj_feats.norm(dim=-1, keepdim=True)
 
                 # --- ZS 分类器 ---
@@ -684,7 +700,7 @@ class LoRANSPTrainer:
 
                     vision_ctx_ref = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
                     with vision_ctx_ref:
-                        s_img_f = self.model.get_image_features(r_imgs)
+                        s_img_f = encode_image_features(self.model, r_imgs)
                     s_img_f = s_img_f / s_img_f.norm(dim=-1, keepdim=True)
 
                     l_fd = feature_distillation_loss(t_img_f, s_img_f)

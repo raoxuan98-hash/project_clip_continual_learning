@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from src.utils.infinite_sampler import InfiniteSampler
+from src.models.backbone_utils import encode_image_features, encode_text_features, tokenize_texts
 
 class MergedReferenceDataset(Dataset):
     """
@@ -60,8 +61,12 @@ def load_reference_dataset(args, model_pretrain, processor, device,
         return None
 
     try:
-        from src.utils.data import Flickr8kDataset
-        ref_dataset_obj = Flickr8kDataset(root=REFERENCE_ROOTS[args.reference_dataset])
+        from src.utils.data import Flickr8kDataset, get_transforms
+        # 参考图像与在线数据使用同一骨干的归一化（SigLIP2 为 0.5/0.5/0.5）
+        _, ref_transform = get_transforms(
+            args.reference_dataset, model_name=getattr(args, "model_name", None))
+        ref_dataset_obj = Flickr8kDataset(
+            root=REFERENCE_ROOTS[args.reference_dataset], transform=ref_transform)
         raw_ref_loader = ref_dataset_obj.return_loader(
             batch_size=32, shuffle=False, num_workers=4
         )
@@ -73,13 +78,13 @@ def load_reference_dataset(args, model_pretrain, processor, device,
         with torch.no_grad():
             for imgs, txts in tqdm(raw_ref_loader, desc="Caching Reference Data"):
                 imgs = imgs.to(device)
-                t_img_feat = model_pretrain.get_image_features(imgs)
+                t_img_feat = encode_image_features(model_pretrain, imgs)
                 t_img_feat = t_img_feat / t_img_feat.norm(dim=-1, keepdim=True)
                 
                 # 编码文本
-                text_inputs = processor(text=txts, return_tensors="pt", padding=True, truncation=True)
+                text_inputs = tokenize_texts(processor, txts, model=model_pretrain)
                 text_inputs = {k: v.to(device) for k, v in text_inputs.items()}
-                t_txt_feat = model_pretrain.get_text_features(**text_inputs)
+                t_txt_feat = encode_text_features(model_pretrain, text_inputs)
                 t_txt_feat = t_txt_feat / t_txt_feat.norm(dim=-1, keepdim=True)
                 
                 cached_imgs.append(imgs.cpu())
@@ -90,8 +95,13 @@ def load_reference_dataset(args, model_pretrain, processor, device,
         # 预 tokenize 所有参考文本，避免训练循环重复 CPU tokenization
         if return_tokenized_text:
             all_texts = cached_txts
-            tokenized = processor(text=all_texts, return_tensors="pt", padding=True, truncation=True)
-            text_data = (tokenized["input_ids"], tokenized["attention_mask"])
+            tokenized = tokenize_texts(processor, all_texts, model=model_pretrain)
+            # SigLIP tokenizer 只返回 input_ids（无 attention_mask）；补全 1 掩码，
+            # 语义上等价于不传 mask（所有位置可见），保持 5 元组协议不变。
+            attention_mask = tokenized.get("attention_mask")
+            if attention_mask is None:
+                attention_mask = torch.ones_like(tokenized["input_ids"])
+            text_data = (tokenized["input_ids"], attention_mask)
             merged_ref_dataset = MergedReferenceDataset(
                 torch.cat(cached_imgs), text_data,
                 torch.cat(cached_t_img_feats), torch.cat(cached_t_txt_feats),

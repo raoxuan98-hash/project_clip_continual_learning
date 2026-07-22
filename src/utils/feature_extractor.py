@@ -1,5 +1,6 @@
 import torch
 from tqdm import tqdm
+from src.models.backbone_utils import encode_image_features
 
 @torch.inference_mode()
 def extract_features(model, dataloader, device, normalize=True, keep_on_device=False):
@@ -22,12 +23,7 @@ def extract_features(model, dataloader, device, normalize=True, keep_on_device=F
 
     for images, lbls in tqdm(dataloader, desc="Extracting features"):
         images = images.to(device)
-        vision_outputs = model.vision_model(images)
-        if hasattr(vision_outputs, 'pooler_output') and vision_outputs.pooler_output is not None:
-            pooled = vision_outputs.pooler_output
-        else:
-            pooled = vision_outputs[1]
-        feats = model.visual_projection(pooled)
+        feats = encode_image_features(model, images)
         if normalize:
             feats = torch.nn.functional.normalize(feats, dim=-1)
         features.append(feats if keep_on_device else feats.cpu())

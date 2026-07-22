@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from src.utils.data import Flickr8kDataset, get_transforms
+from src.models.backbone_utils import encode_image_features, encode_text_features, tokenize_texts
 
 
 class RetrievalImageDataset(Dataset):
@@ -92,8 +93,8 @@ def parse_retrieval_roots(raw):
     return roots
 
 
-def _standard_transform():
-    _, transform_test = get_transforms("flickr8k")
+def _standard_transform(model_name=None):
+    _, transform_test = get_transforms("flickr8k", model_name=model_name)
     return transform_test
 
 
@@ -104,12 +105,12 @@ def _apply_max_images(samples, prompts_list, max_images):
     return samples, prompts_list
 
 
-def load_retrieval_dataset(dataset_name, root, max_images=0):
+def load_retrieval_dataset(dataset_name, root, max_images=0, model_name=None):
     root = Path(root)
     if not root.exists():
         raise FileNotFoundError(f"Retrieval dataset root does not exist: {root}")
 
-    transform = _standard_transform()
+    transform = _standard_transform(model_name=model_name)
     if dataset_name == "flickr8k":
         dataset = Flickr8kDataset(str(root), transform=transform)
         if max_images and int(max_images) > 0:
@@ -371,9 +372,7 @@ def encode_images(model, dataset, device, batch_size, num_workers):
     seen_indices = []
     for images, indices in tqdm(loader, desc="Encoding retrieval images"):
         images = images.to(device)
-        outputs = model.vision_model(images)
-        pooled = outputs.pooler_output if getattr(outputs, "pooler_output", None) is not None else outputs[1]
-        feats = model.visual_projection(pooled)
+        feats = encode_image_features(model, images)
         feats = F.normalize(feats.float(), dim=-1)
         features.append(feats.cpu())
         seen_indices.append(indices.cpu())
@@ -390,21 +389,9 @@ def encode_texts(model, processor, captions, device, batch_size):
     features = []
     for start in tqdm(range(0, len(captions), batch_size), desc="Encoding retrieval captions"):
         end = min(start + batch_size, len(captions))
-        inputs = processor(
-            text=captions[start:end],
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-        )
+        inputs = tokenize_texts(processor, captions[start:end], model=model)
         inputs = {key: value.to(device) for key, value in inputs.items()}
-        outputs = model.text_model(**inputs)
-        if getattr(outputs, "pooler_output", None) is not None:
-            pooled = outputs.pooler_output
-        elif hasattr(outputs, "last_hidden_state"):
-            pooled = outputs.last_hidden_state[:, -1, :]
-        else:
-            pooled = outputs[1] if isinstance(outputs, tuple) else outputs
-        feats = model.text_projection(pooled)
+        feats = encode_text_features(model, inputs)
         feats = F.normalize(feats.float(), dim=-1)
         features.append(feats.cpu())
     return torch.cat(features, dim=0)

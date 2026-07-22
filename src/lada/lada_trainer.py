@@ -10,6 +10,7 @@ from src.trainers.lora_nsp_trainer import LoRANSPTrainer
 from src.lada.lada_classifier import LADAClassifier
 from src.lada.dpt import DPTManager
 from src.utils.feature_extractor import extract_features
+from src.models.backbone_utils import embedding_dim, encode_image_features
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -39,7 +40,7 @@ class LADATrainer(LoRANSPTrainer):
                  lada_state=None, dpt_state=None):
         super().__init__(args, covariance_history, text_covariance_history)
 
-        feature_dim = self.model.config.projection_dim
+        feature_dim = embedding_dim(self.model)
 
         self.lada_classifier = LADAClassifier(
             feature_dim,
@@ -90,7 +91,7 @@ class LADATrainer(LoRANSPTrainer):
         all_labels = []
         for images, lbls in tqdm(dataloader, desc="Extracting features"):
             images = images.to(self.device)
-            feats = self.model.get_image_features(images)
+            feats = encode_image_features(self.model, images)
             if normalize:
                 feats = feats / feats.norm(dim=-1, keepdim=True)
             all_features.append(feats.cpu())
@@ -189,7 +190,7 @@ class LADATrainer(LoRANSPTrainer):
 
             vision_ctx = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
             with vision_ctx:
-                raw_img_feats = self.model.get_image_features(images)
+                raw_img_feats = encode_image_features(self.model, images)
 
             shifted_labels = batch_labels + c_prev
 

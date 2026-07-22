@@ -6,7 +6,14 @@ from src.models.lora_sgp import (
 )
 from src.models.lora_baseline import VanillaLoRACLIPVisionTransformer, VanillaLoRACLIPTextTransformer
 from src.models.lada_text_adapter import LADAAdaptFormerCLIPTextTransformer
-from transformers import CLIPModel, CLIPProcessor
+from src.models.backbone_utils import (
+    embedding_dim,
+    encode_image_features,
+    encode_text_features,
+    is_siglip2_model_name,
+    tokenize_texts,
+)
+from transformers import AutoModel, AutoProcessor, CLIPModel, CLIPProcessor
 import os
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -19,10 +26,13 @@ def _env_flag(name, default):
 
 
 def get_clip_model(args, train_mode="lora"):
-    model_name = os.environ.get("CLIP_MODEL_NAME", "openai/clip-vit-base-patch16")
+    model_name = getattr(args, "model_name", None) or os.environ.get(
+        "CLIP_MODEL_NAME", "openai/clip-vit-base-patch16")
     use_safetensors = _env_flag("CLIP_USE_SAFETENSORS", True)
     local_files_only = _env_flag("CLIP_LOCAL_FILES_ONLY", False)
-    model = CLIPModel.from_pretrained(
+    model_cls = AutoModel if is_siglip2_model_name(model_name) else CLIPModel
+    processor_cls = AutoProcessor if is_siglip2_model_name(model_name) else CLIPProcessor
+    model = model_cls.from_pretrained(
         model_name,
         use_safetensors=use_safetensors,
         local_files_only=local_files_only,
@@ -35,7 +45,7 @@ def get_clip_model(args, train_mode="lora"):
         if cfg is not None:
             cfg.output_attentions = False
             cfg.output_hidden_states = False
-    processor = CLIPProcessor.from_pretrained(
+    processor = processor_cls.from_pretrained(
         model_name,
         local_files_only=local_files_only,
         use_fast=True,
@@ -183,22 +193,26 @@ class CLIP_BaseNet(nn.Module):
         self.model, self.processor = get_clip_model(args, train_mode=train_mode)
 
     def forward(self, img, text):
-        x = self.model.get_image_features(img)
-        y = self.model.get_text_features(text)
+        x = encode_image_features(self.model, img)
+        if isinstance(text, dict):
+            text_inputs = text
+        else:
+            text_inputs = tokenize_texts(self.processor, text, model=self.model)
+            text_inputs = {k: v.to(img.device) for k, v in text_inputs.items()}
+        y = encode_text_features(self.model, text_inputs)
         return x, y
 
     def encode_image(self, img):
-        return self.model.get_image_features(img)
+        return encode_image_features(self.model, img)
 
     def encode_text(self, text):
-        text_inputs = self.processor(text=text, return_tensors="pt", padding=True, truncation=True)
+        text_inputs = tokenize_texts(self.processor, text, model=self.model)
         text_inputs = {k: v.to(self.model.device) for k, v in text_inputs.items()}
-        text_features = self.model.get_text_features(**text_inputs)
-        return text_features
+        return encode_text_features(self.model, text_inputs)
 
     @property
     def feature_dim(self):
-        return self.model.config.projection_dim
+        return embedding_dim(self.model)
 
 # In[]
 if __name__ == "__main__":

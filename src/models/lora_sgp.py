@@ -558,7 +558,13 @@ class LoRACLIPVisionTransformer(nn.Module):
         self.fused_qkv = fused_qkv
         self.share_qkv = os.environ.get("SHARE_QKV", "1").lower() in ("1", "true", "yes")
         self.r = r
-        self.feature_dim = clip_vision_model.embeddings.patch_embedding.out_channels  #768
+        # CLIP 的 patch_embedding 是 Conv2d（out_channels=768）；SigLIP 系
+        # 部分 checkpoint 结构略异，回退到 out_features / hidden_size。
+        patch_embedding = clip_vision_model.embeddings.patch_embedding
+        self.feature_dim = getattr(
+            patch_embedding, "out_channels",
+            getattr(patch_embedding, "out_features", clip_vision_model.config.hidden_size),
+        )
 
         self.use_soft_projection = use_soft_projection
         self.weight_temp = weight_temp
