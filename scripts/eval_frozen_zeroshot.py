@@ -53,6 +53,8 @@ def main():
         assert len(c_names) == len(class_names), (d_name, len(c_names), len(class_names))
         classifier = get_zeroshot_classifier(model, processor, class_names, device)
         features, labels = extract_features(model, te_loader, device, normalize=True)
+        features = features.to(device)
+        labels = labels.to(device)
         logits = features @ classifier
         pred = logits.argmax(dim=-1)
         acc = (pred == labels).float().mean().item() * 100.0
