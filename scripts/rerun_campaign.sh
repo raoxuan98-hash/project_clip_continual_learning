@@ -3,7 +3,7 @@
 #
 # 用法:
 #   bash scripts/rerun_campaign.sh <wave> <gpu>
-#   wave: smoke | waveA | waveB | waveC | waveC2 | waveC_lada | waveD | waveE | waveF
+#   wave: smoke | waveA | waveB | waveC | waveC2 | waveC_lada | waveD | waveE | waveF | waveG
 #   4 GPU 上限（GPU0-3）：waveC 先行 4 runs，waveC2 接力 lora fs s43/44；
 #   waveC_lada / waveD 已按 4 GPU 重排。
 #   每个 wave 内部按 GPU 静态分工（见各分支），同一 GPU 内串行；
@@ -191,6 +191,15 @@ waveF)
   # 配置与 waveA__lora_nf__16shot__seed43 完全一致 + 每任务后保存评估 artifact
   run_one $GPU WaveF_offline waveF__lora_nf__16shot__seed43_artifacts $LORA_NF --seed 43 \
     --save_step_artifacts --async_eval_dir experiments/paper_formal/WaveF_offline/async_e6
+  ;;
+waveG)
+  # CD 方向 A/B：i2t_only（v2 旧行为）× seeds 42/43，与 waveA lora_nf（bidir）同 seed 配对
+  # GPU0 -> seed42，GPU1 -> seed43，其余 GPU 无分配
+  case $GPU in
+    0) run_one 0 WaveG_cddirection waveG__lora_nf_i2tonly__16shot__seed42 $LORA_NF --cd_direction i2t_only --seed 42 ;;
+    1) run_one 1 WaveG_cddirection waveG__lora_nf_i2tonly__16shot__seed43 $LORA_NF --cd_direction i2t_only --seed 43 ;;
+    *) echo "[waveG gpu$GPU] 无分配（仅 GPU 0/1 -> seeds 42/43）" ;;
+  esac
   ;;
 *)
   echo "unknown wave: $WAVE"; exit 1 ;;
