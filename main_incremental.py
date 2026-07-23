@@ -617,6 +617,10 @@ def parse_args():
                         help="Divergence form for cross-modal distillation.")
     parser.add_argument("--cd_temperature", type=float, default=4.0,
                         help="Temperature for cross-modal distillation soft labels.")
+    parser.add_argument("--cd_direction", type=str, default="bidir",
+                        choices=["bidir", "i2t_only"],
+                        help="CD 方向：bidir=0.5*(I2T+T2I)（main_v3 修复后行为）；"
+                             "i2t_only=仅 image->text 单向无缩放（v2 旧行为，用于 A/B 对照）。")
     parser.add_argument("--aux_weight", type=float, default=0.0,
                         help="Weight for auxiliary linear classifier loss (0=disabled). "
                              "Adds a linear head on features during training to improve "

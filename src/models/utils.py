@@ -76,10 +76,10 @@ def cross_modal_distillation_loss(logit_scale: torch.Tensor,
                                   teacher_img_feat: torch.Tensor,
                                   teacher_text_feat: torch.Tensor,
                                   temperature: float = 2.0,
-                                  divergence: str = "kl_forward"):
+                                  divergence: str = "kl_forward",
+                                  direction: str = "bidir"):
     """
-    Cross-modal distillation between teacher and student CLIP-like models,
-    computed in both directions (image->text and text->image) and averaged.
+    Cross-modal distillation between teacher and student CLIP-like models.
 
     Args:
         divergence: one of
@@ -89,6 +89,9 @@ def cross_modal_distillation_loss(logit_scale: torch.Tensor,
             - mse:         Mean squared error on probabilities
             - cosine:      1 - cosine similarity on probabilities
             - l1:          L1 distance on probabilities
+        direction: "bidir" = 0.5*(I2T + T2I)（默认，c14255e 修复后行为）；
+                   "i2t_only" = 仅 image->text 单向、不加 0.5 缩放（v2 旧行为，
+                   用于 CD 方向 A/B 对照）。
     """
     s_lp_i2t, s_p_i2t, s_lp_t2i, s_p_t2i = _logits_and_probs_bidir(
         logit_scale, student_img_feat, student_text_feat, temperature)
@@ -99,6 +102,10 @@ def cross_modal_distillation_loss(logit_scale: torch.Tensor,
 
     loss_i2t = _directional_divergence(
         s_lp_i2t, s_p_i2t, t_lp_i2t, t_p_i2t, temperature, divergence)
+    if direction == "i2t_only":
+        return loss_i2t
+    if direction != "bidir":
+        raise ValueError(f"Unsupported cd direction: {direction}")
     loss_t2i = _directional_divergence(
         s_lp_t2i, s_p_t2i, t_lp_t2i, t_p_t2i, temperature, divergence)
     return 0.5 * (loss_i2t + loss_t2i)

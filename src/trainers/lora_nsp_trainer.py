@@ -721,9 +721,11 @@ class LoRANSPTrainer:
 
                     cd_divergence = getattr(self.args, "cd_divergence", "kl_forward")
                     cd_temperature = getattr(self.args, "cd_temperature", 2.0)
+                    cd_direction = getattr(self.args, "cd_direction", "bidir")
                     l_cd = cross_modal_distillation_loss(
                         logit_scale, s_img_f, s_txt_f, t_img_f, t_txt_f,
-                        temperature=cd_temperature, divergence=cd_divergence)
+                        temperature=cd_temperature, divergence=cd_divergence,
+                        direction=cd_direction)
                     l_cd_val = l_cd.item()
 
                     loss = loss + self.args.fd_weight * l_fd + self.args.cd_weight * l_cd
