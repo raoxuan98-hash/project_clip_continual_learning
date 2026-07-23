@@ -776,7 +776,39 @@ def main():
     summary_rows = []
     method_history = {}
 
+    # Resume support: load per-step results that already exist in output_dir
+    # so a rerun only executes the missing steps (e.g. after a crash).
+    completed_steps = set()
+    for prev_path in sorted(args.output_dir.glob("step_*_sweep.json")):
+        try:
+            with prev_path.open("r", encoding="utf-8") as handle:
+                prev = json.load(handle)
+            prev_step = int(prev["step_index"])
+        except (ValueError, KeyError, json.JSONDecodeError):
+            continue
+        completed_steps.add(prev_step)
+        for method_name, metrics in prev["method_metrics"].items():
+            per_dataset = metrics.get("per_dataset")
+            if per_dataset is not None:
+                method_history.setdefault(method_name, []).append(per_dataset)
+        summary_rows.append(
+            {
+                "step_index": prev_step,
+                "task_name": prev["task_name"],
+                "method_metrics": prev["method_metrics"],
+                "sanity": prev.get("sanity", {}),
+            }
+        )
+    if completed_steps:
+        logging.info(
+            "Resuming: %d steps already completed (%s); skipping them.",
+            len(completed_steps),
+            sorted(completed_steps),
+        )
+
     for step_index, artifact_path, artifact in artifacts:
+        if step_index in completed_steps:
+            continue
         logging.info(
             "=== Sweeping step %d (%s): %s ===",
             step_index + 1,
