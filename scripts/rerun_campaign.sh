@@ -201,6 +201,17 @@ waveG)
     *) echo "[waveG gpu$GPU] 无分配（仅 GPU 0/1 -> seeds 42/43）" ;;
   esac
   ;;
+waveH)
+  # 主干步数扫描：iterations 600/400 × 1 seed，启用 LADA 内联评估
+  # GPU1 -> iter600 seed42, GPU3 -> iter400 seed42
+  BASE_ARGS="${BASE_ARGS/--disable_lada/}"
+  case $GPU in
+    1) run_one 1 WaveH_iterations waveH__lora_nf_iter600__16shot__seed42 $LORA_NF --iterations 600 --seed 42 ;;
+    3) run_one 3 WaveH_iterations waveH__lora_nf_iter400__16shot__seed42 $LORA_NF --iterations 400 --seed 42 ;;
+    *) echo "[waveH gpu$GPU] 无分配（仅 GPU 1/3 -> iter600/iter400 seed42）" ;;
+  esac
+  ;;
+
 *)
   echo "unknown wave: $WAVE"; exit 1 ;;
 esac
