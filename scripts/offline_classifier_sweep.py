@@ -6,7 +6,11 @@ This script performs a read-only sweep over saved step artifacts:
   - Rebuilds the inline LR-RGDA classifier from `lr_rgda.state_dict` (sanity A).
   - Rebuilds an unfitted LR-RGDA classifier from `rgda_stats_by_m[4]` (sanity B).
   - Refits LR-RGDA for num_centers in {1,2,4,8} and rgda_train_iter in {50,100,200,400,800}.
-  - Evaluates Zero-shot, LR-RGDA, Ensemble, LADA, and LADA+ZS on all seen tasks.
+  - Rebuilds the LADA classifier from re-extracted training features (always),
+    plus the artifact LADA state_dict when the run had LADA enabled.
+  - Evaluates Zero-shot, LR-RGDA, Ensemble, LADA, and LADA+ZS on ALL tasks
+    (seen + unseen) so the accuracy matrix is fully populated and the
+    Transfer / Average / Last metrics (and (T+L)/2) are exact.
 
 Usage:
     python scripts/offline_classifier_sweep.py \
@@ -528,13 +532,13 @@ def evaluate_step(
         time.time() - t0,
     )
 
-    # Build LADA classifiers (only if LADA was enabled in the artifact).
+    # Build LADA classifiers. The from-data rebuild is always possible because
+    # training features are re-extracted above; the artifact state_dict (when
+    # LADA was enabled during the run) is kept as an additional reference.
     lada_state = build_lada_from_state_dict(artifact, device)
-    lada_rebuilt = None
-    if lada_state is not None:
-        lada_rebuilt = build_lada_from_data(
-            all_train_features, all_train_labels, all_train_features.shape[1], device
-        )
+    lada_rebuilt = build_lada_from_data(
+        all_train_features, all_train_labels, all_train_features.shape[1], device
+    )
 
     # Build inline LR-RGDA (saved state_dict) for sanity reference.
     inline_config = artifact["lr_rgda"]["config"]
@@ -560,11 +564,36 @@ def evaluate_step(
         except ValueError:
             pass
 
+    # Sweep over (M, iter) combinations. Always rebuild/refit so that the
+    # M=4/iter=200 offline refit can be compared against the inline state_dict
+    # version (acceptance criterion: per-cell difference <= 0.5%).
+    sweep_classifiers = {}
+    for m in num_centers_list:
+        for iters in rgda_train_iter_list:
+            key = f"rgda_m{m}_iter{iters}"
+            classifier = build_rgda_classifier(
+                artifact,
+                run_args,
+                m,
+                iters,
+                device,
+                model,
+                all_train_features,
+                all_train_labels,
+                history_class_names,
+                samples_per_class,
+                rgda_fit_lr,
+            )
+            sweep_classifiers[key] = (classifier, m, iters)
+
     # Prepare method score trackers.
     method_scores = {}
 
-    # Evaluate on tasks 1..current_step.
-    for step_idx in range(current_step + 1):
+    # Evaluate every method on ALL tasks (seen + unseen) in a single pass.
+    # Supervised heads (LR-RGDA / LADA) only cover seen classes, so they score
+    # 0 on unseen tasks by construction; ZS-based scores stay meaningful on
+    # unseen tasks, which is what makes the Transfer column well-defined.
+    for step_idx in range(len(task_names)):
         d_name = task_names[step_idx]
         eval_bs = eval_batch_size if eval_batch_size is not None else run_args.batch_size
         _, test_transform = get_transforms(d_name)
@@ -614,84 +643,38 @@ def evaluate_step(
                 unfitted_acc = unfitted_logits.argmax(dim=1).eq(labels).float().mean().item()
                 method_scores.setdefault(f"unfitted_m{inline_m}", {})[d_name] = unfitted_acc
 
-            # LADA state.
+            # LADA from artifact state_dict (only when the run had LADA enabled).
             if lada_state is not None:
-                lada_logits = lada_state(features)
-                lada_acc = lada_logits.argmax(dim=1).eq(labels).float().mean().item()
-                method_scores.setdefault("lada_state", {})[d_name] = lada_acc
+                lada_state_logits = lada_state(features)
+                lada_state_acc = lada_state_logits.argmax(dim=1).eq(labels).float().mean().item()
+                method_scores.setdefault("lada_state", {})[d_name] = lada_state_acc
 
-                lada_zs_logits = combine_ensemble_logits(
+                lada_state_zs_logits = combine_ensemble_logits(
                     zs_logits,
-                    lada_logits,
+                    lada_state_logits,
                     current_num_classes,
                     lada_alpha,
                     run_args.ensemble_normalize,
                 )
-                lada_zs_acc = lada_zs_logits.argmax(dim=1).eq(labels).float().mean().item()
-                method_scores.setdefault(f"lada_zs_alpha{lada_alpha}", {})[d_name] = lada_zs_acc
+                lada_state_zs_acc = lada_state_zs_logits.argmax(dim=1).eq(labels).float().mean().item()
+                method_scores.setdefault(f"lada_state_zs_alpha{lada_alpha}", {})[d_name] = lada_state_zs_acc
 
-            # LADA rebuilt (only evaluated when LADA state exists for comparison).
-            if lada_rebuilt is not None:
-                lada_rebuilt_logits = lada_rebuilt(features)
-                lada_rebuilt_acc = lada_rebuilt_logits.argmax(dim=1).eq(labels).float().mean().item()
-                method_scores.setdefault("lada_rebuilt", {})[d_name] = lada_rebuilt_acc
+            # LADA rebuilt from re-extracted training features (always available).
+            lada_logits = lada_rebuilt(features)
+            lada_acc = lada_logits.argmax(dim=1).eq(labels).float().mean().item()
+            method_scores.setdefault("lada", {})[d_name] = lada_acc
 
-    # Sanity checks for inline vs unfitted.
-    sanity = {}
-    if unfitted_classifier is not None:
-        sanity["inline_vs_unfitted_diff"] = _mean_accuracy_difference(
-            method_scores[f"inline_m{inline_m}_iter{inline_iter}"],
-            method_scores[f"unfitted_m{inline_m}"],
-        )
-    if lada_state is not None:
-        sanity["lada_state_vs_rebuilt_diff"] = _mean_accuracy_difference(
-            method_scores["lada_state"],
-            method_scores["lada_rebuilt"],
-        )
-
-    # Sweep over (M, iter) combinations. Always rebuild/refit so that the
-    # M=4/iter=200 offline refit can be compared against the inline state_dict
-    # version (acceptance criterion: per-cell difference <= 0.5%).
-    sweep_classifiers = {}
-    for m in num_centers_list:
-        for iters in rgda_train_iter_list:
-            key = f"rgda_m{m}_iter{iters}"
-            classifier = build_rgda_classifier(
-                artifact,
-                run_args,
-                m,
-                iters,
-                device,
-                model,
-                all_train_features,
-                all_train_labels,
-                history_class_names,
-                samples_per_class,
-                rgda_fit_lr,
+            lada_zs_logits = combine_ensemble_logits(
+                zs_logits,
+                lada_logits,
+                current_num_classes,
+                lada_alpha,
+                run_args.ensemble_normalize,
             )
-            sweep_classifiers[key] = (classifier, m, iters)
+            lada_zs_acc = lada_zs_logits.argmax(dim=1).eq(labels).float().mean().item()
+            method_scores.setdefault(f"lada_zs_alpha{lada_alpha}", {})[d_name] = lada_zs_acc
 
-    # Evaluate sweep classifiers on all seen tasks.
-    for step_idx in range(current_step + 1):
-        d_name = task_names[step_idx]
-        eval_bs = eval_batch_size if eval_batch_size is not None else run_args.batch_size
-        _, test_transform = get_transforms(d_name)
-        _, _, te_loader, c_names = get_xtail_trainloader(
-            root=run_args.root,
-            dataset_name=d_name,
-            transform_train=None,
-            transform_test=test_transform,
-            num_shots=run_args.num_shots,
-            batch_size=eval_bs,
-            num_workers=run_args.num_workers,
-        )
-        features, labels = extract_features(model, te_loader, device)
-        features = F.normalize(features.float(), dim=-1).to(device)
-        labels = (labels + dataset_label_offsets[d_name]).long().to(device)
-
-        with torch.no_grad():
-            zs_logits = features @ zeroshot_classifier
-
+            # Sweep classifiers + their ZS ensembles.
             for key, (classifier, m, iters) in sweep_classifiers.items():
                 rgda_logits = _rgda_forward_chunked(
                     classifier, features, rgda_eval_chunk_size
@@ -699,54 +682,68 @@ def evaluate_step(
                 rgda_acc = rgda_logits.argmax(dim=1).eq(labels).float().mean().item()
                 method_scores.setdefault(key, {})[d_name] = rgda_acc
 
-                ens_logits = combine_ensemble_logits(
+                sweep_ens_logits = combine_ensemble_logits(
                     zs_logits,
                     rgda_logits,
                     current_num_classes,
                     run_args.alpha,
                     run_args.ensemble_normalize,
                 )
-                ens_acc = ens_logits.argmax(dim=1).eq(labels).float().mean().item()
-                method_scores.setdefault(f"ens_m{m}_iter{iters}_alpha{run_args.alpha}", {})[d_name] = ens_acc
+                sweep_ens_acc = sweep_ens_logits.argmax(dim=1).eq(labels).float().mean().item()
+                method_scores.setdefault(f"ens_m{m}_iter{iters}_alpha{run_args.alpha}", {})[d_name] = sweep_ens_acc
+
+    # Sanity checks (compared on seen tasks only, where both sides are
+    # meaningful; unseen cells are 0=0 and would dilute the difference).
+    seen_task_names = set(task_names[: current_step + 1])
+
+    def _seen_only(scores):
+        return {k: v for k, v in scores.items() if k in seen_task_names}
+
+    sanity = {}
+    if unfitted_classifier is not None:
+        sanity["inline_vs_unfitted_diff"] = _mean_accuracy_difference(
+            _seen_only(method_scores[f"inline_m{inline_m}_iter{inline_iter}"]),
+            _seen_only(method_scores[f"unfitted_m{inline_m}"]),
+        )
+    if lada_state is not None:
+        sanity["lada_state_vs_rebuilt_diff"] = _mean_accuracy_difference(
+            _seen_only(method_scores["lada_state"]),
+            _seen_only(method_scores["lada"]),
+        )
 
     # Compare M=4/iter=200 refit vs inline (acceptance criterion).
     if not skip_sanity_fit and inline_m == 4 and inline_iter == 200:
         refit_key = "rgda_m4_iter200"
         if refit_key in method_scores:
             sanity["inline_vs_refit_m4_iter200_diff"] = _mean_accuracy_difference(
-                method_scores[f"inline_m{inline_m}_iter{inline_iter}"],
-                method_scores[refit_key],
+                _seen_only(method_scores[f"inline_m{inline_m}_iter{inline_iter}"]),
+                _seen_only(method_scores[refit_key]),
             )
 
     return current_step, artifact["task_name"], method_scores, sanity
 
 
-def compute_metrics(method_scores, task_names, step_index):
-    """Compute Transfer / Average / Last metrics for each method up to current step."""
-    seen_tasks = task_names[: step_index + 1]
-    tracker = ContinualLearningMetrics(task_names)
-    for d_name in seen_tasks:
-        tracker.update(step_index, {d_name: method_scores.get(d_name, 0.0)})
-    summary = tracker.get_summary()
-    return {
-        "transfer": summary["transfer"],
-        "average": summary["average"],
-        "last": summary["last"],
-    }
+def compute_all_method_metrics(method_history, task_names):
+    """Compute Transfer / Average / Last for all methods from full history.
 
-
-def compute_all_method_metrics(method_scores, task_names, step_index):
-    """Compute T/A/L for all methods in method_scores."""
+    Args:
+        method_history: {method_name: [per_dataset_row_step0, ...]} where each
+            row maps dataset name -> accuracy (fraction) at that step. Rows
+            cover all tasks (seen + unseen), so the accuracy matrix is fully
+            populated and Transfer is well-defined.
+    """
     results = {}
-    for method_name, per_dataset in method_scores.items():
+    for method_name, rows in method_history.items():
         tracker = ContinualLearningMetrics(task_names)
-        tracker.update(step_index, per_dataset)
+        for step_idx, per_dataset in enumerate(rows):
+            tracker.update(step_idx, per_dataset)
         summary = tracker.get_summary()
         results[method_name] = {
             "transfer": summary["transfer"],
             "average": summary["average"],
             "last": summary["last"],
-            "per_dataset": per_dataset,
+            "tl_mean": (summary["transfer"] + summary["last"]) / 2.0,
+            "per_dataset": rows[-1] if rows else {},
         }
     return results
 
@@ -777,6 +774,7 @@ def main():
 
     task_names = list(artifacts[0][2]["task_names"])
     summary_rows = []
+    method_history = {}
 
     for step_index, artifact_path, artifact in artifacts:
         logging.info(
@@ -805,24 +803,27 @@ def main():
             args.skip_sanity_fit,
         )
 
-        method_metrics = compute_all_method_metrics(method_scores, task_names, step_idx)
+        for method_name, per_dataset in method_scores.items():
+            method_history.setdefault(method_name, []).append(per_dataset)
+        method_metrics = compute_all_method_metrics(method_history, task_names)
 
         # Print key numbers.
-        print("\n" + "-" * 90)
+        print("\n" + "-" * 102)
         print(
             f"Step {step_idx + 1:02d} ({task_name}) | Sanity: {_format_sanity(sanity)}"
         )
-        print("-" * 90)
-        header = f"{'Method':<35} {'Transfer':>10} {'Average':>10} {'Last':>10}"
+        print("-" * 102)
+        header = f"{'Method':<35} {'Transfer':>10} {'Average':>10} {'Last':>10} {'(T+L)/2':>10}"
         print(header)
-        print("-" * 90)
+        print("-" * 102)
         for method_name in sorted(method_metrics.keys()):
             metrics = method_metrics[method_name]
             print(
                 f"{method_name:<35} "
-                f"{metrics['transfer']:10.2f} {metrics['average']:10.2f} {metrics['last']:10.2f}"
+                f"{metrics['transfer']:10.2f} {metrics['average']:10.2f} "
+                f"{metrics['last']:10.2f} {metrics['tl_mean']:10.2f}"
             )
-        print("-" * 90)
+        print("-" * 102)
         logging.info("Step %d sweep finished in %.1fs", step_index + 1, time.time() - t0)
 
         # Write per-step JSON.
@@ -890,6 +891,7 @@ def main():
                     "transfer": metrics["transfer"],
                     "average": metrics["average"],
                     "last": metrics["last"],
+                    "tl_mean": metrics["tl_mean"],
                 }
             )
     summary["sweep_summary_by_method"] = sweep_summary
