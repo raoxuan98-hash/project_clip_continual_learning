@@ -1,0 +1,43 @@
+run:
+  name: math_lora_nf
+  seeds: [42, 43, 44]
+  execution_mode: gpu_formal
+
+model:
+  id: meta-llama/Llama-3.2-3B-Instruct
+  checkpoint_type: instruct
+  local_files_only: true
+
+adapter:
+  method: lora_nf
+  rank: 128
+  alpha: 128
+  dropout: null  # Locked after official LoRA-Null config audit.
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  filter:
+    energy_fraction: 0.20
+    leakage: 0.02
+    ridge: 0.0001
+
+calibration:
+  dataset: nq_open
+  samples: 256
+  max_sequence_length: 1024
+  include_non_padding_tokens: true
+
+train:
+  dataset: metamathqa
+  first_n: 100000
+  epochs: 1
+  optimizer: adamw
+  learning_rate: 0.00002
+  global_batch_size: 128
+  scheduler: cosine
+  warmup_ratio: 0.03
+  response_only_loss: true
+  precision: bf16
+
+evaluation:
+  downstream: [gsm8k, math]
+  retention: [triviaqa, nq_open, webqs]
+

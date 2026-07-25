@@ -1,0 +1,28 @@
+run:
+  name: qwen3_0p6b_lora_nf_smoke
+  seed: 42
+  execution_mode: cpu_smoke_only
+
+model:
+  id: Qwen/Qwen3-0.6B
+  checkpoint_type: instruct
+  local_files_only: true
+  enable_thinking: false
+
+adapter:
+  method: lora_nf
+  rank: 8
+  alpha: 8
+  dropout: 0.0
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  filter:
+    energy_fraction: 0.20
+    leakage: 0.02
+    ridge: 0.0001
+
+smoke:
+  max_steps: 1
+  max_sequence_length: 32
+  synthetic_examples: 2
+  collect_formal_metrics: false
+

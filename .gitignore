@@ -39,6 +39,7 @@ env/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb_checkpoints/
+.pytest_cache/
 
 # Logs
 artifacts/logs/
@@ -116,3 +117,32 @@ PROJECT_TUTORIAL.md
 PROJECT_TUTORIAL_CLASSIFIER.md
 V1_TO_V2_CHANGELOG.md
 LADA/
+
+# LLM LoRA-NF local research records and paper workspace
+chat-history/
+chat-history-for-paper-writing/
+paper_writing/
+docs/llm-lora-nf/records/
+
+# LLM model/data caches and runtime artifacts
+model_cache/
+models_cache/
+hf_cache/
+modelscope_cache/
+.cache/
+llm_lora_nf/data/
+llm_lora_nf/datasets/
+llm_lora_nf/checkpoints/
+llm_lora_nf/experiments/
+llm_lora_nf/artifacts/
+
+# Model weights, datasets, archives, and large binary artifacts
+*.safetensors
+*.bin
+*.gguf
+*.onnx
+*.arrow
+*.parquet
+*.tar
+*.tar.gz
+*.zip

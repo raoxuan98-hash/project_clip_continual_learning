@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-lora-nf"
+version = "0.1.0"
+description = "Attention-only runtime null-space filtered LoRA for LLM adaptation"
+requires-python = ">=3.9"
+dependencies = [
+  "torch>=2.1",
+  "transformers>=4.45",
+  "datasets>=3.0",
+  "accelerate>=1.0",
+  "peft>=0.13",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+

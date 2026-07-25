@@ -1,0 +1,12 @@
+# Versions already present in the approved server environment on 2026-07-25.
+# This file records the tested environment; it is not an instruction to install locally.
+torch==2.8.0
+transformers==4.57.3
+datasets==3.6.0
+peft==0.17.1
+accelerate==1.10.1
+trl==0.24.0
+modelscope==1.30.0
+PyYAML>=6.0
+pytest>=8.0
+
