@@ -8,11 +8,29 @@ import yaml
 from .config import AdapterConfig, FilterConfig
 
 
+def _deep_merge(base: Dict[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, Mapping)
+        ):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_yaml_config(path: str) -> Dict[str, Any]:
     config_path = Path(path)
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Expected a mapping in {config_path}")
+    parent = payload.pop("extends", None)
+    if parent is not None:
+        parent_path = (config_path.parent / str(parent)).resolve()
+        payload = _deep_merge(load_yaml_config(str(parent_path)), payload)
     return payload
 
 

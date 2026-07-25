@@ -20,17 +20,39 @@ def main() -> None:
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--revision", default="master")
     parser.add_argument("--cache-dir", required=True)
+    parser.add_argument(
+        "--include-original",
+        action="store_true",
+        help=(
+            "Also download publisher-native weight exports such as original/*.pth. "
+            "By default only the Transformers-compatible snapshot is downloaded."
+        ),
+    )
     args = parser.parse_args()
 
     from modelscope import snapshot_download
     from modelscope.hub.api import HubApi
 
     metadata = HubApi().get_model(args.model_id)
+    remote_files = HubApi().get_model_files(
+        args.model_id,
+        revision=args.revision,
+        recursive=True,
+    )
+    remote_by_path = {
+        str(item.get("Path")): item
+        for item in remote_files
+        if item.get("Type") == "blob"
+    }
+    ignore_patterns = None
+    if not args.include_original:
+        ignore_patterns = ["original/**", "*.pth"]
     resolved = Path(
         snapshot_download(
             args.model_id,
             revision=args.revision,
             cache_dir=args.cache_dir,
+            ignore_file_pattern=ignore_patterns,
         )
     ).resolve()
     files = []
@@ -39,6 +61,10 @@ def main() -> None:
             continue
         relative = str(path.relative_to(resolved))
         record = {"path": relative, "size_bytes": path.stat().st_size}
+        remote = remote_by_path.get(relative)
+        if remote is not None:
+            record["remote_revision"] = remote.get("Revision")
+            record["remote_sha256"] = remote.get("Sha256")
         if relative in {
             "config.json",
             "generation_config.json",
@@ -53,6 +79,7 @@ def main() -> None:
         "modelscope_revision": metadata.get("Revision"),
         "modelscope_last_updated_time": metadata.get("LastUpdatedTime"),
         "license": metadata.get("License"),
+        "included_publisher_original_weights": args.include_original,
         "files": files,
     }
     manifest = resolved / "local_snapshot_manifest.json"

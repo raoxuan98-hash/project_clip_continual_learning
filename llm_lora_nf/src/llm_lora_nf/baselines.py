@@ -53,6 +53,31 @@ def _scaled_factors_from_svd(
     return lora_A, lora_B
 
 
+def _scaled_factors_from_projected_weight(
+    weight: torch.Tensor,
+    low_basis: torch.Tensor,
+    *,
+    scaling: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Factor W U U^T through the much smaller W U matrix.
+
+    If U is orthonormal, WU and WUU^T have identical nonzero singular
+    values. This produces the same square-root SVD parameterization as a
+    dense SVD of WUU^T without materializing the d_out x d_in projection.
+    """
+
+    compressed = weight @ low_basis
+    left, singular_values, compressed_right_h = torch.linalg.svd(
+        compressed,
+        full_matrices=False,
+    )
+    right_h = compressed_right_h @ low_basis.transpose(0, 1)
+    roots = torch.sqrt(torch.clamp(singular_values / scaling, min=0.0))
+    lora_B = left * roots.unsqueeze(0)
+    lora_A = roots.unsqueeze(1) * right_h
+    return lora_A, lora_B
+
+
 @torch.no_grad()
 def initialize_lora_null(
     model: nn.Module,
@@ -80,12 +105,10 @@ def initialize_lora_null(
             )
         low_basis = eigenvectors[:, : module.rank]
         weight = module.base_layer.weight.detach().to(device="cpu", dtype=torch.float64)
-        low_component = weight @ low_basis @ low_basis.transpose(0, 1)
-        lora_A, lora_B = _scaled_factors_from_svd(
-            low_component,
-            rank=module.rank,
+        lora_A, lora_B = _scaled_factors_from_projected_weight(
+            weight,
+            low_basis,
             scaling=module.scaling,
-            select="largest",
         )
         module.set_decomposition_initialization(lora_A, lora_B)
         dimensions[name] = module.rank
@@ -180,4 +203,41 @@ def build_peft_baseline(model: nn.Module, config: AdapterConfig, method: str) ->
         task_type=TaskType.CAUSAL_LM,
         **kwargs,
     )
+    return get_peft_model(model, peft_config)
+
+
+def build_corda_baseline(
+    model: nn.Module,
+    config: AdapterConfig,
+    *,
+    run_calibration,
+    cache_file: Optional[str] = None,
+    covariance_file: Optional[str] = None,
+    mode: str = "kpm",
+) -> nn.Module:
+    from peft import LoraConfig, TaskType, get_peft_model
+    from peft.tuners.lora.config import CordaConfig
+    from peft.tuners.lora.corda import preprocess_corda
+
+    if mode not in {"kpm", "ipm"}:
+        raise ValueError("CorDA mode must be 'kpm' or 'ipm'")
+    corda_config = CordaConfig(
+        cache_file=cache_file,
+        covariance_file=covariance_file,
+        corda_method=mode,
+        verbose=True,
+        use_float16_for_covariance=False,
+        prune_temporary_fields=True,
+    )
+    peft_config = LoraConfig(
+        r=config.rank,
+        lora_alpha=config.alpha,
+        lora_dropout=config.dropout,
+        target_modules=list(config.target_modules),
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+        init_lora_weights="corda",
+        corda_config=corda_config,
+    )
+    preprocess_corda(model, peft_config, run_model=run_calibration)
     return get_peft_model(model, peft_config)

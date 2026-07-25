@@ -1,0 +1,3 @@
+extends: qwen3_realdata_base.yaml
+run: {name: qwen3_realdata_pissa_smoke}
+adapter: {method: pissa}

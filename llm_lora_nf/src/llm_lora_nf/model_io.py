@@ -1,3 +1,4 @@
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -18,6 +19,7 @@ QWEN3_POST_TRAINED_IDS = {
 @dataclass(frozen=True)
 class ModelLoadRecord:
     requested_id: str
+    source_id: str
     resolved_path: str
     checkpoint_type: str
     torch_dtype: str
@@ -57,6 +59,7 @@ def load_instruct_model(
     *,
     requested_id: str,
     resolved_path: str,
+    source_id: Optional[str] = None,
     checkpoint_type: str = "instruct",
     device: str = "cpu",
     local_files_only: bool = True,
@@ -64,6 +67,16 @@ def load_instruct_model(
     torch_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[Any, Any, ModelLoadRecord]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    source_id = requested_id if source_id is None else source_id
+    snapshot_manifest = Path(resolved_path) / "local_snapshot_manifest.json"
+    if snapshot_manifest.exists():
+        snapshot = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
+        actual_source = snapshot.get("model_id")
+        if actual_source and actual_source != source_id:
+            raise ValueError(
+                f"Resolved snapshot is {actual_source!r}, expected source {source_id!r}"
+            )
 
     if device == "cpu":
         load_dtype = torch.float32 if torch_dtype is None else torch_dtype
@@ -96,6 +109,7 @@ def load_instruct_model(
     model.to(torch.device(device))
     record = ModelLoadRecord(
         requested_id=requested_id,
+        source_id=source_id,
         resolved_path=str(Path(resolved_path).resolve()),
         checkpoint_type=checkpoint_type,
         torch_dtype=str(load_dtype),

@@ -1,0 +1,5 @@
+extends: qwen3_realdata_base.yaml
+run: {name: qwen3_realdata_corda_kpm_smoke}
+adapter:
+  method: corda
+  corda_mode: kpm

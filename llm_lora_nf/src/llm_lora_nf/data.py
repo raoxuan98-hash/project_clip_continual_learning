@@ -117,6 +117,95 @@ class SupervisedChatDataset(torch.utils.data.Dataset):
         return self.rows[index]
 
 
+class LazySupervisedChatDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        examples: Sequence[ChatExample],
+        tokenizer: Any,
+        *,
+        max_length: int,
+        enable_thinking: bool = False,
+    ) -> None:
+        if not examples:
+            raise ValueError("At least one chat example is required")
+        self.examples = examples
+        self.tokenizer = tokenizer
+        self.max_length = int(max_length)
+        self.enable_thinking = bool(enable_thinking)
+
+    def __len__(self) -> int:
+        return len(self.examples)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        return encode_chat_example(
+            self.examples[index],
+            self.tokenizer,
+            max_length=self.max_length,
+            enable_thinking=self.enable_thinking,
+        )
+
+
+class CalibrationQuestionDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        questions: Sequence[str],
+        tokenizer: Any,
+        *,
+        max_length: int,
+        enable_thinking: bool = False,
+    ) -> None:
+        if not questions:
+            raise ValueError("At least one calibration question is required")
+        self.rows = []
+        for question in questions:
+            text = tokenizer.apply_chat_template(
+                [{"role": "user", "content": question}],
+                tokenize=False,
+                add_generation_prompt=True,
+                **_template_kwargs(enable_thinking),
+            )
+            encoded = tokenizer(
+                text,
+                add_special_tokens=False,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            )
+            self.rows.append(
+                {
+                    "input_ids": encoded["input_ids"].squeeze(0),
+                    "attention_mask": encoded["attention_mask"].squeeze(0),
+                }
+            )
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        return self.rows[index]
+
+
+class CalibrationCollator:
+    def __init__(self, pad_token_id: int) -> None:
+        self.pad_token_id = int(pad_token_id)
+
+    def __call__(
+        self,
+        features: Sequence[Dict[str, torch.Tensor]],
+    ) -> Dict[str, torch.Tensor]:
+        response_collator = ResponseOnlyCollator(self.pad_token_id)
+        compatible = [
+            {
+                **row,
+                "labels": torch.full_like(row["input_ids"], IGNORE_INDEX),
+            }
+            for row in features
+        ]
+        batch = response_collator(compatible)
+        del batch["labels"]
+        return batch
+
+
 class ResponseOnlyCollator:
     def __init__(self, pad_token_id: int) -> None:
         self.pad_token_id = int(pad_token_id)

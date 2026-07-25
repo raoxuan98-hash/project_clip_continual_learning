@@ -2,7 +2,10 @@ import copy
 
 import torch
 
-from llm_lora_nf.baselines import build_native_adapter
+from llm_lora_nf.baselines import (
+    _scaled_factors_from_projected_weight,
+    build_native_adapter,
+)
 from llm_lora_nf.calibration import ActivationCalibrator, build_and_assign_filters
 from llm_lora_nf.checkpoint import load_native_adapter, save_native_adapter
 from llm_lora_nf.config import AdapterConfig
@@ -104,3 +107,16 @@ def test_lora_null_checkpoint_roundtrip_reapplies_base_offset(tmp_path):
     target.load_state_dict(original_state)
     load_native_adapter(target, str(tmp_path), adapter_config=config)
     torch.testing.assert_close(target(**batch), expected, atol=1e-6, rtol=1e-5)
+
+
+def test_low_rank_projected_svd_matches_dense_projection():
+    torch.manual_seed(53)
+    weight = torch.randn(11, 9, dtype=torch.float64)
+    basis, _ = torch.linalg.qr(torch.randn(9, 3, dtype=torch.float64))
+    lora_A, lora_B = _scaled_factors_from_projected_weight(
+        weight,
+        basis,
+        scaling=1.0,
+    )
+    expected = weight @ basis @ basis.transpose(0, 1)
+    torch.testing.assert_close(lora_B @ lora_A, expected, atol=1e-10, rtol=1e-10)

@@ -1,7 +1,7 @@
 extends: math_base.yaml
 
 run:
-  name: math_lora_nf
+  name: math_lora
 
 adapter:
-  method: lora_nf
+  method: lora

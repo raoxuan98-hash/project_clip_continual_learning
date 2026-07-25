@@ -5,6 +5,7 @@ run:
 
 model:
   id: Qwen/Qwen3-0.6B
+  source_id: Qwen/Qwen3-0.6B
   checkpoint_type: instruct
   local_files_only: true
   enable_thinking: false

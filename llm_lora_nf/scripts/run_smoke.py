@@ -85,6 +85,7 @@ def main() -> None:
     adapter_config = adapter_config_from_mapping(config["adapter"])
     model, tokenizer, load_record = load_instruct_model(
         requested_id=model_config["id"],
+        source_id=model_config.get("source_id", model_config["id"]),
         resolved_path=args.model_path,
         checkpoint_type=model_config["checkpoint_type"],
         device=str(device),
@@ -164,6 +165,7 @@ def main() -> None:
 
     reloaded_model, reloaded_tokenizer, _ = load_instruct_model(
         requested_id=model_config["id"],
+        source_id=model_config.get("source_id", model_config["id"]),
         resolved_path=args.model_path,
         checkpoint_type=model_config["checkpoint_type"],
         device=str(device),
@@ -189,13 +191,18 @@ def main() -> None:
         enable_thinking=bool(model_config.get("enable_thinking", False)),
     )
     generation_inputs = reloaded_tokenizer(prompt, return_tensors="pt")
-    generation_config = copy.deepcopy(reloaded_model.generation_config)
-    generation_config.max_new_tokens = 8
-    generation_config.do_sample = False
-    generation_config.temperature = None
-    generation_config.top_p = None
-    generation_config.top_k = None
-    generation_config.pad_token_id = reloaded_tokenizer.pad_token_id
+    from transformers import GenerationConfig
+
+    generation_config = GenerationConfig(
+        max_new_tokens=8,
+        do_sample=False,
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        bos_token_id=reloaded_model.generation_config.bos_token_id,
+        eos_token_id=reloaded_model.generation_config.eos_token_id,
+        pad_token_id=reloaded_tokenizer.pad_token_id,
+    )
     with torch.no_grad():
         output_ids = reloaded_model.generate(
             **generation_inputs,

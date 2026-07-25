@@ -1,0 +1,7 @@
+extends: math_base.yaml
+
+run:
+  name: math_lora_null
+
+adapter:
+  method: lora_null

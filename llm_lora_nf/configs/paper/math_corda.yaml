@@ -1,0 +1,8 @@
+extends: math_base.yaml
+
+run:
+  name: math_corda_kpm
+
+adapter:
+  method: corda
+  corda_mode: kpm
