@@ -32,7 +32,7 @@ class AdapterConfig:
     filter: FilterConfig = field(default_factory=FilterConfig)
 
     def __post_init__(self) -> None:
-        if self.method not in {"lora", "lora_nf"}:
+        if self.method not in {"lora", "lora_nf", "lora_null", "milora"}:
             raise ValueError(f"Unsupported native adapter method: {self.method}")
         if self.rank <= 0:
             raise ValueError("rank must be positive")
@@ -53,4 +53,3 @@ class AdapterConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-

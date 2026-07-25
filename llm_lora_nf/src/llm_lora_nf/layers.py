@@ -53,6 +53,14 @@ class FilteredLoRALinear(nn.Module):
         self.filter = HardLeakyFilter(self.in_features, leakage=1.0).to(
             device=device, dtype=dtype
         )
+        self.register_buffer(
+            "base_offset_A",
+            torch.empty(0, self.in_features, device=device, dtype=dtype),
+        )
+        self.register_buffer(
+            "base_offset_B",
+            torch.empty(self.out_features, 0, device=device, dtype=dtype),
+        )
         self.register_buffer("merged", torch.tensor(False, device=device))
         self.reset_lora_parameters()
 
@@ -79,6 +87,56 @@ class FilteredLoRALinear(nn.Module):
         if self.use_filter:
             x = self.filter(x)
         return self.dropout(x)
+
+    @property
+    def has_base_offset(self) -> bool:
+        return self.base_offset_A.shape[0] > 0
+
+    @torch.no_grad()
+    def set_decomposition_initialization(
+        self,
+        lora_A: torch.Tensor,
+        lora_B: torch.Tensor,
+    ) -> None:
+        """Install an exact-function decomposition initialization.
+
+        The supplied factors define the initial adapter. Their scaled product is
+        subtracted from the frozen base weight, so base + adapter still equals
+        the original checkpoint at initialization. This is the common mechanism
+        used by LoRA-Null and MiLoRA, with different factor builders.
+        """
+
+        if tuple(lora_A.shape) != tuple(self.lora_A.weight.shape):
+            raise ValueError(
+                f"Expected A shape {tuple(self.lora_A.weight.shape)}, "
+                f"got {tuple(lora_A.shape)}"
+            )
+        if tuple(lora_B.shape) != tuple(self.lora_B.weight.shape):
+            raise ValueError(
+                f"Expected B shape {tuple(self.lora_B.weight.shape)}, "
+                f"got {tuple(lora_B.shape)}"
+            )
+        if self.has_base_offset:
+            raise RuntimeError("A decomposition initialization is already installed")
+        offset_A = lora_A.to(
+            device=self.base_layer.weight.device,
+            dtype=self.base_layer.weight.dtype,
+        )
+        offset_B = lora_B.to(
+            device=self.base_layer.weight.device,
+            dtype=self.base_layer.weight.dtype,
+        )
+        self.base_layer.weight.sub_(self.scaling * (offset_B @ offset_A))
+        self.lora_A.weight.copy_(offset_A)
+        self.lora_B.weight.copy_(offset_B)
+        self.base_offset_A = offset_A.detach().clone()
+        self.base_offset_B = offset_B.detach().clone()
+
+    @torch.no_grad()
+    def restore_base_offset(self, lora_A: torch.Tensor, lora_B: torch.Tensor) -> None:
+        """Reapply a saved decomposition offset to a fresh base checkpoint."""
+
+        self.set_decomposition_initialization(lora_A, lora_B)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base = self.base_layer(x)
@@ -117,6 +175,18 @@ class FilteredLoRALinear(nn.Module):
     def merge_and_reset(self) -> None:
         self.merge()
         self.reset_lora_parameters()
+        self.base_offset_A = torch.empty(
+            0,
+            self.in_features,
+            device=self.base_layer.weight.device,
+            dtype=self.base_layer.weight.dtype,
+        )
+        self.base_offset_B = torch.empty(
+            self.out_features,
+            0,
+            device=self.base_layer.weight.device,
+            dtype=self.base_layer.weight.dtype,
+        )
         self.merged.fill_(False)
 
     def extra_repr(self) -> str:
@@ -124,4 +194,3 @@ class FilteredLoRALinear(nn.Module):
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"rank={self.rank}, alpha={self.alpha}, use_filter={self.use_filter}"
         )
-

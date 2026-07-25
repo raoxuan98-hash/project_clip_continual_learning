@@ -12,7 +12,7 @@ adapter:
   method: lora_nf
   rank: 128
   alpha: 128
-  dropout: null  # Locked after official LoRA-Null config audit.
+  dropout: 0.0
   target_modules: [q_proj, k_proj, v_proj, o_proj]
   filter:
     energy_fraction: 0.20
@@ -40,4 +40,3 @@ train:
 evaluation:
   downstream: [gsm8k, math]
   retention: [triviaqa, nq_open, webqs]
-

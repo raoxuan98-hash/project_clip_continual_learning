@@ -22,7 +22,6 @@ adapter:
 
 smoke:
   max_steps: 1
-  max_sequence_length: 32
+  max_sequence_length: 64
   synthetic_examples: 2
   collect_formal_metrics: false
-
