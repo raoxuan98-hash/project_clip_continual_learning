@@ -323,6 +323,7 @@ def _run(args: argparse.Namespace) -> None:
                 cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
             )
         )
+        torch.cuda.set_device(device)
     elif args.cpu_smoke_fallback:
         execution_mode = "cpu_smoke_only"
         device = torch.device("cpu")
@@ -406,7 +407,7 @@ def _run(args: argparse.Namespace) -> None:
     set_reproducible_seed(seed)
     total_started = time.monotonic()
     if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.reset_peak_memory_stats()
     environment_record = runtime_environment(
         device,
         validate_formal=execution_mode == "gpu_formal",
@@ -699,7 +700,7 @@ def _run(args: argparse.Namespace) -> None:
         metrics_result,
     )
     peak_gpu_memory_bytes = (
-        int(torch.cuda.max_memory_allocated(device))
+        int(torch.cuda.max_memory_allocated())
         if device.type == "cuda"
         else 0
     )
