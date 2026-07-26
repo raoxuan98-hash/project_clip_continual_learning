@@ -128,6 +128,20 @@ The locked evaluator is `lm-evaluation-harness` v0.4.12 at commit
 `6d642546f4688648fced259eb3302efd36ece5af`. Its optional dependencies are
 recorded separately in `requirements-evaluation.txt`.
 
+The code-task extension uses the complete 104,848-row Python CodeFeedback split
+published with PiSSA. `prepare_code_training_data.py` binds its HF-Mirror
+revision, byte size, SHA-256, schema, and one known empty-output row.
+`track_b_code_evalplus.yaml` locks EvalPlus v0.3.1 at commit
+`e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2`, HumanEval+ v0.1.10, and MBPP+
+v0.2.0. Greedy FP32 generation writes one solution per task. Generated code is
+never executed in the model process: `run_evalplus_sandbox.py` clears inherited
+environment variables and uses networkless Bubblewrap namespaces with read-only
+software/data mounts before recomputing original and Plus pass@1.
+
+The similarly named Hugging Face `evalplus/*` auto-converted datasets were
+audited and rejected as formal overrides because they do not retain EvalPlus's
+separate `base_input` and `plus_input` fields.
+
 All model, data, merged-weight, sample-log, and result paths must remain outside
 Git under the server data root. Calibration cache entries are large runtime
 artifacts and must never be staged. A CPU run may validate every stage, but its

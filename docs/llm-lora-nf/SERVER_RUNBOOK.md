@@ -23,6 +23,10 @@ export REQUEST_CACHE_ROOT="$LLM_DATA_ROOT/request_cache"
 export EVAL_HF_HOME="$LLM_DATA_ROOT/eval_hf_cache"
 export EVAL_MANIFEST="$EVAL_HF_HOME/math_knowledge_prepare_manifest_v2.json"
 export EVALUATOR_PATH=/path/to/clean/lm-evaluation-harness-v0.4.12
+export EVALPLUS_PATH="$LLM_DATA_ROOT/evaluators/evalplus-v0.3.1"
+export EVALPLUS_DATA_ROOT="$LLM_DATA_ROOT/evalplus_release_cache"
+export EVALPLUS_MANIFEST="$EVALPLUS_DATA_ROOT/evalplus_data_manifest.json"
+export CODE_TRAIN_MANIFEST="$LLM_DATA_ROOT/codefeedback_python_manifest.json"
 ```
 
 `EVALUATOR_PATH` 必须指向 clean commit
@@ -60,8 +64,9 @@ git rev-parse HEAD
 PYTHONPATH=src "$LLM_PY" -m pytest -q
 ```
 
-2026-07-26 当前源码结果为 `89 passed`。只有当前 commit 的完整结果可以
-写入新记录；不得沿用旧的 “27 passed”。
+提交 `006805ed39193d12406d242874f44e75c45b278c` 的结果为
+`102 passed`。只有当前 commit 的完整结果可以写入新记录；不得沿用旧
+测试计数。
 
 ## 3. 模型与数据
 
@@ -85,6 +90,26 @@ python scripts/prepare_eval_data.py \
 若目标 manifest 或临时 manifest 已存在，脚本会停止审计，不覆盖。正式
 评测阶段全程启用 offline mode，并在每次 run 前复核实际 cache 文件的
 字节数和 SHA-256。
+
+代码任务数据准备：
+
+```bash
+"$LLM_PY" scripts/prepare_code_training_data.py \
+  --cache-dir "$LLM_DATA_ROOT/hf_mirror_cache" \
+  --output-manifest "$CODE_TRAIN_MANIFEST"
+
+"$LLM_PY" scripts/prepare_evalplus_data.py \
+  --config configs/evaluation/track_b_code_evalplus.yaml \
+  --output-root "$EVALPLUS_DATA_ROOT" \
+  --output-manifest "$EVALPLUS_MANIFEST" \
+  --reuse-verified
+```
+
+`EVALPLUS_PATH` 必须是 clean detached commit
+`e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2`。依赖按
+`requirements-code-evaluation.txt` 安装，项目环境不得安装第二份 PyTorch。
+HF-Mirror 的自动转换 EvalPlus parquet 不是 official base/plus input 格式，
+不得替换上述 release 数据。
 
 ## 4. 无 GPU 时的唯一允许动作
 
@@ -161,6 +186,41 @@ python scripts/launch_math_evaluation.py \
 
 只有 protocol gate 达到预注册门槛后，才执行 `main`，命令与上节相同，
 把两处 `protocol_gate` 改为 `main`。
+
+### 5.4 代码任务训练与分离评测
+
+代码训练沿用同一串行 launcher：
+
+```bash
+"$LLM_PY" scripts/launch_sft_matrix.py \
+  --matrix configs/paper/code_matrix.yaml \
+  --stage protocol_gate \
+  --output-root "$TRAIN_ROOT/code"
+```
+
+单 run EvalPlus 必须分成生成与执行，不允许在模型进程中直接运行生成代码：
+
+```bash
+"$LLM_PY" scripts/run_evalplus_codegen.py \
+  --config configs/evaluation/track_b_code_evalplus.yaml \
+  --evaluator-path "$EVALPLUS_PATH" \
+  --model-path /path/to/base-or-ephemeral-fp32-merged \
+  --model-role merged \
+  --model-manifest /path/to/merged_export_manifest.json \
+  --dataset-manifest "$EVALPLUS_MANIFEST" \
+  --output-dir "$EVAL_ROOT/code_generation/model/method/seed"
+
+"$LLM_PY" scripts/run_evalplus_sandbox.py \
+  --config configs/evaluation/track_b_code_evalplus.yaml \
+  --evaluator-path "$EVALPLUS_PATH" \
+  --dataset-manifest "$EVALPLUS_MANIFEST" \
+  --generation-dir "$EVAL_ROOT/code_generation/model/method/seed" \
+  --output-dir "$EVAL_ROOT/code_execution/model/method/seed"
+```
+
+第二步硬要求服务器可用的 Bubblewrap，清空继承环境并禁用网络。只有
+`code_execution_run.json` 标记 formal、raw result 完整性封存成功后，才
+允许按第 6 节规则精确删除该 run 的临时 merged checkpoint。
 
 ## 6. 自动低存储行为
 

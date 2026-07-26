@@ -33,7 +33,8 @@ LLM Git 分支：`llm-lora-nf`；已推送提交：
 
 当前批次包含 checkpoint v2、merge/eval、矩阵启动器、
 Track A、多种子统计、正式训练语义修正、目录级完整性链与低存储
-checkpoint 保留策略；服务器锁定环境完整测试为 `89 passed`，正式运行前
+checkpoint 保留策略；代码任务提交 `006805ed` 的服务器锁定环境完整测试
+为 `102 passed`，正式运行前
 仍须提交并取得干净 SHA。
 
 ## 2. 网络与缓存
@@ -243,10 +244,70 @@ Track B 将同一 sampler、normalization、moment 和 SVD 初始化机制应用
 
 ## 6. 代码任务
 
-- 训练：CodeFeedback 前 100,000 条；
-- 评测：HumanEval、MBPP；
-- evaluator：官方/BigCode evaluator 的固定 commit；
-- execution sandbox、pass@k、temperature 和 sample 数必须锁定后再运行。
+### 6.1 训练数据
+
+- 数据：`fxmeng/pissa-dataset` 的 `python/train.json`，即 PiSSA 官方整理的
+  Python-only CodeFeedback 子集；
+- revision：`d4746ceca8314940af8a61333bc2d395d9e259c9`；
+- 原始来源：`m-a-p/CodeFeedback-Filtered-Instruction` revision
+  `a08c213a9748c66c15d0225814be80a2e77adf4a`；
+- 获取：`HF_ENDPOINT=https://hf-mirror.com`；
+- 文件大小：`244222081` bytes；
+- SHA-256：
+  `2fc75475ecb65aa9fa7a0f7135e4c0b8c59cfd52ef27a9ea0040ef143b891a82`；
+- 使用全部 `104848` 条 Python 样本，不从多语言原始集做未记录的前缀截取；
+- 公开文件仅索引 `25233` 的 output 为空字符串。该行保留并锁定，使用
+  Instruct chat template 时只监督 assistant 终止标记；不得静默过滤后仍
+  声称使用完整公开子集；
+- 1 epoch、global batch `128`，每 epoch 为 `819` 个完整 optimizer
+  groups，实际消费 `104832` 条，尾部 `16` 条 shuffled 样本丢弃；
+- 其余训练预算、attention-only 目标模块、rank/alpha/dropout、
+  calibration 和 seeds 与数学 Track B 完全相同。
+
+服务器数据 manifest：
+
+```text
+/home/raoxuan/projects/data/llm_lora_nf/codefeedback_python_manifest.json
+SHA-256: 35eaabc524ee6b04b3323b63bfe0cb03146b2ec578632d94f5ff5eff8688020b
+```
+
+### 6.2 EvalPlus 评测
+
+- evaluator：`evalplus/evalplus` v0.3.1，commit
+  `e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2`；
+- HumanEval+：official release `v0.1.10`，164 tasks；
+- MBPP+：official release `v0.2.0`，378 tasks；
+- 生成：Instruct chat template、HF backend、greedy、temperature `0`、
+  batch size `1`、每题 `1` 个 solution、`max_new_tokens=768`、
+  FP32 merged checkpoint、eager attention；
+- 主指标同时报告原始 base tests 和 base+extra tests：
+  HumanEval/HumanEval+/MBPP/MBPP+ pass@1；
+- 不生成 pass@10/pass@100 样本，避免把生成与存储成本扩大 10--100 倍；
+- 代码生成与代码执行分离。生成阶段只使用一张合规 GPU；执行阶段在 CPU
+  Bubblewrap 中运行，启用 `--unshare-all`、清空继承环境、禁网、只读
+  evaluator/Python/data 挂载和每进程 4 GiB 内存上限；
+- timeout 使用 EvalPlus 默认语义
+  `max(1 second, ground-truth time × 4)`；`test_details=false` 只做
+  fail-fast，不改变 pass/fail；
+- 空或不可编译的模型输出计为失败，不把整次 run 判为流水线故障。
+
+HF-Mirror 的 `evalplus/humanevalplus` 与 `evalplus/mbppplus` 固定 revision
+已核验，但其自动转换格式只有合并后的 `test` 代码，不含 official
+evaluator 必需的 `base_input`/`plus_input`，因此明确拒绝作为正式 override。
+正式数据使用 EvalPlus 官方 GitHub release；这不涉及直连
+`huggingface.co`，压缩与解压内容均锁定：
+
+| 数据 | compressed SHA-256 | JSONL SHA-256 | evaluator MD5 |
+|---|---|---|---|
+| HumanEvalPlus v0.1.10 | `272720b90ac375502c8ed23cd791c2a93dfb22a911641a494da74a426c09f101` | `42526ec0e7d5f3ee0b06d6ced98f8c8bae3d76519151bfb3d36f79010645bd7f` | `fe585eb4df8c88d844eeb463ea4d0302` |
+| MbppPlus v0.2.0 | `af43697e8791c4c149bdfd6b489d8b5412507551ac20e28a439f650b8225db63` | `b54e762755248ca411b523c917fa9f93c07b5ff2966bf60b3917b853926a3dad` | `ee43ecabebf20deef4bb776a405ac5b1` |
+
+服务器 EvalPlus data manifest：
+
+```text
+/home/raoxuan/projects/data/llm_lora_nf/evalplus_release_cache/evalplus_data_manifest.json
+SHA-256: 970ce043160f5d13fd9385c9286d0dda7e62a6cb9362bcc71e9897366250c307
+```
 
 ## 7. 指令任务
 
@@ -365,7 +426,8 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
   PyTorch；RTX 4090 CUDA 张量与反向传播已通过；
 - `nvidia-smi` 和 Python NVML 查询均已恢复。当前 6 张卡各有约
   16--17 GB 显存占用，按资源约束暂不启动新的正式训练；
-- 当前源码在上述项目环境完整测试为 `89 passed`，另有一个不影响运行的
+- 提交 `006805ed39193d12406d242874f44e75c45b278c` 的源码在上述项目环境
+  完整测试为 `102 passed`，另有一个不影响运行的
   `pynvml` 包名弃用警告。
 
 2026-07-25 的远程 CPU 链路已通过：
@@ -402,7 +464,7 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
 - FP32 native merge 与标准 HF checkpoint 导出；
 - lm-eval NQ Open `limit=1` CPU 闭环；
 - Track A、统计、训练语义、完整性、checkpoint-retention 和派生证据
-  来源测试均已纳入当前 `89 passed`。
+  来源测试均已纳入当前回归测试。
 
 ## 12. 待核验项
 
@@ -416,7 +478,8 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
 - [x] CorDA、DoRA 官方实现 commit；
 - [x] MetaMathQA、NQ Open 和数学/知识评测数据 revision；
 - [x] 数学/知识 lm-eval commit；
-- [ ] bigcode/FastChat/TRACE evaluator commit；
+- [x] EvalPlus evaluator commit 与 HumanEval+/MBPP+ 数据；
+- [ ] FastChat/IFEval/TRACE evaluator commit；
 - [x] 当前三个缓存模型的 chat template、EOS/pad 和最大长度链路；
 - [x] 静态 adapter/filter/moment 估算脚本；
 - [ ] GPU 资源满足准入后的实测峰值与吞吐。

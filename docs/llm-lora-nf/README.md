@@ -13,7 +13,8 @@ LLM 开发必须与当前 CLIP 代码隔离。目标已经用户批准；后续�
 Track A、checkpoint/export/evaluator、统计、正式配置硬门控与
 content-addressed calibration cache；正式流水线另已加入“单最终 adapter +
 单临时 merged checkpoint”低存储保留策略。2026-07-26 已在隔离 GPU
-环境完成 `89 passed`，并验证 RTX 4090 CUDA 前后向。当前 6 张 GPU 均有
+环境完成代码任务扩展后的 `102 passed`，并验证 RTX 4090 CUDA 前后向。
+当前 6 张 GPU 均有
 约 16--17 GB 显存占用，因此正式实验等待资源准入，不是 CUDA 故障。
 干净提交 `d817858` 的 Qwen3-0.6B 完整 LoRA-NF CPU smoke 也已通过；
 可重建 adapter 验证后已删除，只保留约 16 KB 的非正式报告。
@@ -24,6 +25,11 @@ merged 槽位的跨进程流水线锁。随后又将标准 LoRA 基线切换为�
 PEFT 0.17.1，加入 CorDA 临时校准文件精确回收、LoRA-NF 二阶统计
 PSD 硬校验，以及训练、评测、汇总三层源码/软件环境身份绑定；这些变更
 已在服务器锁定依赖环境中通过完整测试。
+
+代码任务现已固定 PiSSA 发布的 104,848 条 Python CodeFeedback、EvalPlus
+v0.3.1、HumanEval+ v0.1.10、MBPP+ v0.2.0、greedy pass@1 和
+Bubblewrap 分离执行链。数据与 evaluator 均位于服务器外部缓存，不进入
+Git；对应实现提交为 `006805ed39193d12406d242874f44e75c45b278c`。
 
 ## 文件索引
 
