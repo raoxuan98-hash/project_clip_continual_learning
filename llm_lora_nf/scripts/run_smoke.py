@@ -88,6 +88,10 @@ def _run(args: argparse.Namespace) -> None:
     seed = int(run_config["seed"])
     set_reproducible_seed(seed)
     adapter_config = adapter_config_from_mapping(config["adapter"])
+    model_integrity = validate_directory_integrity(
+        args.model_path,
+        expected_kind="model_snapshot",
+    )
     model, tokenizer, load_record = load_instruct_model(
         requested_id=model_config["id"],
         source_id=model_config.get("source_id", model_config["id"]),
@@ -236,6 +240,7 @@ def _run(args: argparse.Namespace) -> None:
             "idle_gpu_indices": admission.idle_gpu_indices,
             "reason": admission.reason,
         },
+        "model_integrity": model_integrity,
         "model": load_record.to_dict(),
         "initialization": initialization.to_dict(),
         "parameters": count_parameters(reloaded_model),
