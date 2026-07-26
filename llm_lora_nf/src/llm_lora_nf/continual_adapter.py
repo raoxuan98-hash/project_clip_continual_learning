@@ -249,6 +249,13 @@ def capture_and_merge_peft_task(
     }
     state.add_branch(branch)
     base_model = model.merge_and_unload(safe_merge=True)
+    # PEFT 0.17.1 leaves this adapter-only attribute on the plain base model
+    # returned by merge_and_unload. Re-wrapping that base for the next
+    # continual task is valid, but get_peft_model otherwise emits a misleading
+    # "multiple adapters" warning. The replay state above is the authoritative
+    # adapter record, so stale wrapper metadata must not leak across tasks.
+    if hasattr(base_model, "peft_config"):
+        delattr(base_model, "peft_config")
     return base_model, branch
 
 
@@ -281,6 +288,8 @@ def replay_peft_state_stack(
                 + ", ".join(unexpected[:20])
             )
         current = wrapped.merge_and_unload(safe_merge=True)
+        if hasattr(current, "peft_config"):
+            delattr(current, "peft_config")
     return current
 
 

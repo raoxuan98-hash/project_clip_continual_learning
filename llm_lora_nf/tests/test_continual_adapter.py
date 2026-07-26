@@ -202,8 +202,9 @@ def test_continual_moment_update_is_phase_equal_not_observation_weighted():
         )
 
 
+@pytest.mark.parametrize("method", ["lora", "dora"])
 @torch.no_grad()
-def test_peft_state_stack_reconstructs_dora_task_merges():
+def test_peft_state_stack_reconstructs_multiple_task_merges(method):
     model_config = LlamaConfig(
         vocab_size=32,
         hidden_size=8,
@@ -216,30 +217,36 @@ def test_peft_state_stack_reconstructs_dora_task_merges():
     torch.manual_seed(29)
     source = LlamaForCausalLM(model_config)
     original_state = copy.deepcopy(source.state_dict())
-    config = AdapterConfig(method="dora", rank=2, alpha=2, dropout=0.0)
+    config = AdapterConfig(method=method, rank=2, alpha=2, dropout=0.0)
     state = CumulativeAdapterState.create(
-        method="dora",
+        method=method,
         backend="peft_state_stack",
         adapter_config=config,
     )
-    source = build_peft_baseline(source, config, "dora")
-    generator = torch.Generator().manual_seed(31)
-    for parameter in source.parameters():
-        if parameter.requires_grad:
-            parameter.add_(
-                torch.randn(
-                    parameter.shape,
-                    generator=generator,
-                    dtype=parameter.dtype,
+    for task_index, task_seed in enumerate((31, 37), start=1):
+        source = build_peft_baseline(source, config, method)
+        generator = torch.Generator().manual_seed(task_seed)
+        for parameter in source.parameters():
+            if parameter.requires_grad:
+                parameter.add_(
+                    torch.randn(
+                        parameter.shape,
+                        generator=generator,
+                        dtype=parameter.dtype,
+                    )
+                    * 0.01
                 )
-                * 0.01
+        source, branch = capture_and_merge_peft_task(
+            source,
+            state,
+            task=f"task-{task_index}",
+        )
+        assert not hasattr(source, "peft_config")
+        if method == "dora":
+            assert any(
+                "magnitude" in name for name in branch["modules"]
             )
-    source, branch = capture_and_merge_peft_task(
-        source,
-        state,
-        task="task-1",
-    )
-    assert any("magnitude" in name for name in branch["modules"])
+    assert state.tasks == ["task-1", "task-2"]
 
     input_ids = torch.tensor([[1, 2, 3, 4]])
     expected = source(input_ids=input_ids).logits
@@ -256,3 +263,4 @@ def test_peft_state_stack_reconstructs_dora_task_merges():
         atol=1e-6,
         rtol=1e-5,
     )
+    assert not hasattr(rebuilt, "peft_config")
