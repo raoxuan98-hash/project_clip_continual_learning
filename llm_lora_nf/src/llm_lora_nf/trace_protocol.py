@@ -302,9 +302,13 @@ def audit_trace_dataset(
                 raise ValueError(
                     f"TRACE paper protocol requires 5000 train rows: {task}"
                 )
-            if splits["eval"].rows + splits["test"].rows != 2000:
+            if splits["eval"].rows <= 0:
                 raise ValueError(
-                    "TRACE paper protocol requires 2000 eval+test rows: "
+                    f"TRACE paper protocol requires a non-empty eval split: {task}"
+                )
+            if splits["test"].rows != 2000:
+                raise ValueError(
+                    "TRACE paper protocol requires 2000 test rows: "
                     f"{task}"
                 )
         formal_eligible = False

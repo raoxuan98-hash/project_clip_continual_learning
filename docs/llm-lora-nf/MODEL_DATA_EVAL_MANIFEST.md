@@ -372,7 +372,7 @@ Google Drive。不得把分别下载的相似原始数据集拼接后宣称为 T
 和预算估算，绝不进入正式论文主表。正式 `paper_5k` 必须同时满足：
 
 1. 每任务恰好 5,000 条 train；
-2. 每任务 eval + test 恰好 2,000 条；
+2. 每任务 test 恰好 2,000 条，且 eval 非空；
 3. 八任务 24 个 JSON 文件都有外部审阅后锁定的精确 SHA-256；
 4. 来源 manifest 能证明为官方 Drive 文件或内容等价镜像；
 5. prompt/answer schema、顺序与 evaluator 输入逐项通过审计。
@@ -389,6 +389,19 @@ Google Drive。不得把分别下载的相似原始数据集拼接后宣称为 T
 - 序列结束只写一个累计 adapter 目录、一个任务×时间指标/预测证据集；
 - 最终 adapter 保存最后的 LoRA-NF 保护 basis、phase count 和谱摘要，
   不重复保存八套历史 basis 或稠密 delta。
+
+### 8.4 连续训练与评测实现
+
+- TRACE split 原始顺序不变地转换为 Instruct chat template；
+- 生成固定 greedy、`do_sample=false`、`num_beams=1`；
+- 每个 stage 只评测所有已见任务，形成严格下三角任务×时间矩阵；
+- prediction artifact 使用确定性 gzip，并绑定 commit、模型 revision、
+  config/data hash、seed、任务顺序和生成参数；
+- MeetingBank 固定 `rouge==1.0.1`，20Minuten SARI 固定
+  `huggingface/evaluate@a7dd338386a4fae9a1767e05eb9ef9479513d9e8`；
+- TRACE 原 SARI 包装的尾逗号 tuple 问题按数值意图确定性修正并记录；
+- runner 在最终累计 adapter 写入后执行目录完整性和结构重载审计；
+- 非正式 smoke 可在上述审计成功后删除 adapter，正式结果禁止删除。
 
 ## 9. 两条评测轨道
 
@@ -543,7 +556,8 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
 - [x] MetaMathQA、NQ Open 和数学/知识评测数据 revision；
 - [x] 数学/知识 lm-eval commit；
 - [x] EvalPlus evaluator commit 与 HumanEval+/MBPP+ 数据；
-- [ ] FastChat/IFEval/TRACE evaluator commit；
+- [ ] FastChat/IFEval evaluator commit；
+- [x] TRACE evaluator commit 与指标兼容层；
 - [x] 当前三个缓存模型的 chat template、EOS/pad 和最大长度链路；
 - [x] 静态 adapter/filter/moment 估算脚本；
 - [ ] GPU 资源满足准入后的实测峰值与吞吐。

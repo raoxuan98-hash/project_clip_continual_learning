@@ -13,7 +13,7 @@ from llm_lora_nf.trace_protocol import (
 )
 
 
-def _write_dataset(root, *, train_rows=5000, eval_rows=1000, test_rows=1000):
+def _write_dataset(root, *, train_rows=5000, eval_rows=100, test_rows=2000):
     for task in TRACE_OFFICIAL_ORDER:
         task_root = root / task
         task_root.mkdir(parents=True)
@@ -43,9 +43,25 @@ def test_paper_trace_audit_checks_cardinality_but_does_not_self_qualify(tmp_path
 
 
 def test_paper_trace_audit_rejects_reduced_training_or_evaluation(tmp_path):
-    _write_dataset(tmp_path, train_rows=500, eval_rows=100, test_rows=100)
+    reduced_train = tmp_path / "reduced_train"
+    _write_dataset(
+        reduced_train,
+        train_rows=500,
+        eval_rows=100,
+        test_rows=2000,
+    )
     with pytest.raises(ValueError, match="5000 train rows"):
-        audit_trace_dataset(str(tmp_path), protocol="paper_5k")
+        audit_trace_dataset(str(reduced_train), protocol="paper_5k")
+
+    reduced_test = tmp_path / "reduced_test"
+    _write_dataset(
+        reduced_test,
+        train_rows=5000,
+        eval_rows=100,
+        test_rows=100,
+    )
+    with pytest.raises(ValueError, match="2000 test rows"):
+        audit_trace_dataset(str(reduced_test), protocol="paper_5k")
 
 
 def test_trace_audit_rejects_schema_drift(tmp_path):

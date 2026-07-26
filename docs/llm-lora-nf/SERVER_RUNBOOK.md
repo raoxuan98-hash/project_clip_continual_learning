@@ -30,6 +30,10 @@ export EVALPLUS_PATH="$LLM_DATA_ROOT/evaluators/evalplus-v0.3.1"
 export EVALPLUS_DATA_ROOT="$LLM_DATA_ROOT/evalplus_release_cache"
 export EVALPLUS_MANIFEST="$EVALPLUS_DATA_ROOT/evalplus_data_manifest.json"
 export CODE_TRAIN_MANIFEST="$LLM_DATA_ROOT/codefeedback_python_manifest.json"
+export TRACE_PILOT_ROOT="$PWD/data/trace_mirror_audit/extracted/LLM-CL-Benchmark_500"
+export TRACE_OUTPUT_ROOT="$LLM_DATA_ROOT/trace_pilot"
+export NQ_PARQUET="$LLM_DATA_ROOT/dataset_cache/opencompass/nq_open/nq_open/train-00000-of-00001.parquet"
+export QWEN3_0P6B="$LLM_DATA_ROOT/model_cache/Qwen/Qwen3-0___6B"
 ```
 
 `EVALUATOR_PATH` 必须指向 clean commit
@@ -67,7 +71,7 @@ git rev-parse HEAD
 PYTHONPATH=src "$LLM_PY" -m pytest -q
 ```
 
-代码评测低存储编排和跨 seed 汇总加入后的服务器结果为 `105 passed`。
+TRACE 连续训练/评测链加入后的服务器结果为 `129 passed`。
 只有当前 commit 的完整结果可以写入新记录；不得沿用旧测试计数。
 
 ## 3. 模型与数据
@@ -239,6 +243,33 @@ Bubblewrap CPU 执行，封存合格结果后立即删除当前临时 merged che
 
 任何 incomplete output、未封存 cache、外来 merged 文件或 commit 不一致
 都会停止。不得用批量删除、猜测性清理或覆盖参数绕过。
+
+### 6.1 TRACE 连续链
+
+当前已核验 TRACE-500 只能运行 pilot 或 chain smoke，不能进入论文主表。
+最小链路在资源检查后使用一张合格 GPU；没有可准入 GPU 时才回退 CPU：
+
+```bash
+"$LLM_PY" scripts/run_trace_continual.py \
+  --config configs/continual/trace_qwen3_0p6b_pilot_lora_nf_fixed.yaml \
+  --model-path "$QWEN3_0P6B" \
+  --trace-data-root "$TRACE_PILOT_ROOT" \
+  --nq-parquet "$NQ_PARQUET" \
+  --output-dir "$TRACE_OUTPUT_ROOT/chain_smoke/seed42" \
+  --max-tasks 1 \
+  --train-first-n 2 \
+  --test-first-n 1 \
+  --max-steps 1 \
+  --max-new-tokens 8 \
+  --calibration-samples 2 \
+  --cpu-smoke-fallback \
+  --delete-checkpoint-after-smoke
+```
+
+输出始终标记 `formal_result_eligible=false`。smoke adapter 仅在完整性与
+累计分支结构审计通过后删除，预测、指标、报告和哈希证据保留。正式
+`paper_5k` 必须先增加已审阅的 24 文件精确来源 manifest；在此之前
+runner 会主动拒绝 `gpu_formal`。
 
 ## 7. 多 seed 汇总
 

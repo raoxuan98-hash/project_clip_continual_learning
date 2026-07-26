@@ -38,7 +38,11 @@ TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
 校验，但明确只作为 pilot；它不会被冒充为每任务 5k/2k 的论文协议。
 连续方法采用 task merge/reset：每个阶段只在内存追加可重放低秩分支，
 最后写一个累计 adapter。LoRA-NF、LoRA-Null 与 DoRA 的多任务重放
-等价测试均已通过，未引入八份阶段模型 checkpoint。
+等价测试均已通过，未引入八份阶段模型 checkpoint。TRACE 的数据读取、
+Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务×时间聚合和
+连续训练 runner 也已接通；当前服务器完整回归为 `129 passed`。正式
+5k/2k 数据尚未取得精确来源 manifest，因此 runner 会硬阻止正式结果，
+只允许已核验 TRACE-500 做状态消融和链路 pilot。
 
 ## 文件索引
 
@@ -58,6 +62,7 @@ TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
 - [`records/2026-07-26-03-storage-baseline-and-provenance-audit.md`](records/2026-07-26-03-storage-baseline-and-provenance-audit.md)：PEFT LoRA 基线、缓存/临时文件回收、滤波统计安全和派生证据来源审计。
 - [`records/2026-07-26-04-server-gpu-environment-and-clean-smoke.md`](records/2026-07-26-04-server-gpu-environment-and-clean-smoke.md)：可用 GPU 环境定位、完整测试、干净提交 CPU 闭环与 checkpoint 回收。
 - [`records/2026-07-26-07-trace-data-and-cumulative-adapter.md`](records/2026-07-26-07-trace-data-and-cumulative-adapter.md)：TRACE 数据资格审计、指标定义与单最终累计 adapter 设计。
+- [`records/2026-07-26-08-trace-runner-and-metrics.md`](records/2026-07-26-08-trace-runner-and-metrics.md)：TRACE Instruct 数据、确定性评测、连续 runner、低存储烟雾测试和完整回归。
 
 ## 文档边界
 

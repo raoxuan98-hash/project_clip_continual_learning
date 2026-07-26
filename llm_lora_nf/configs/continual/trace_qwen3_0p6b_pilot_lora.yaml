@@ -1,0 +1,7 @@
+extends: trace_qwen3_0p6b_pilot_base.yaml
+
+run:
+  name: trace_qwen3_0p6b_pilot_lora
+
+adapter:
+  method: lora

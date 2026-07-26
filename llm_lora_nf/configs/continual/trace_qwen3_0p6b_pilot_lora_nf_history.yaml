@@ -1,0 +1,10 @@
+extends: trace_qwen3_0p6b_pilot_base.yaml
+
+run:
+  name: trace_qwen3_0p6b_pilot_lora_nf_history
+
+adapter:
+  method: lora_nf
+
+trace:
+  state_update: reference_plus_history

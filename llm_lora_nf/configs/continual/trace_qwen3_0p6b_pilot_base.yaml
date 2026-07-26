@@ -1,0 +1,71 @@
+artifact_retention:
+  base_snapshots_per_revision: 1
+  final_adapter_checkpoints_per_run: 1
+  save_intermediate_checkpoints: false
+  save_optimizer_state: false
+  save_scheduler_state: false
+  merged_checkpoint_policy: ephemeral_delete_after_qualified_evaluation
+  max_concurrent_merged_checkpoints: 1
+  request_cache_scope: shared_content_addressed_per_base_model_protocol
+
+run:
+  name: trace_qwen3_0p6b_pilot
+  seed: 42
+  execution_mode: gpu_pilot
+
+model:
+  id: Qwen/Qwen3-0.6B
+  source_id: Qwen/Qwen3-0.6B
+  checkpoint_type: instruct
+  enable_thinking: false
+
+adapter:
+  method: lora_nf
+  rank: 8
+  alpha: 32
+  dropout: 0.1
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+  filter:
+    energy_fraction: 0.20
+    leakage: 0.02
+    ridge: 0.0001
+    statistics_dtype: float32
+    eigensolver_dtype: float64
+
+calibration:
+  dataset: nq_open
+  revision: 20231201
+  samples: 256
+  seed: 233
+  batch_size: 4
+  max_sequence_length: 1024
+  lora_null_max_sequence_length: 2048
+
+trace:
+  data_protocol: treelora_500_pilot
+  state_update: reference_fixed
+
+train:
+  max_sequence_length: 1536
+  global_batch_size: 128
+  per_device_batch_size: 4
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  warmup_ratio: 0.03
+  precision: bf16
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 0.00000001
+  max_grad_norm: 1.0
+
+generation:
+  split: test
+  batch_size: 4
+  max_prompt_length: 1024
+  max_new_tokens: 512
+  do_sample: false
+  num_beams: 1
