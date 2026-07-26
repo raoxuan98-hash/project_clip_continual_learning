@@ -297,6 +297,18 @@ trace_pilot/state_ablation/74a34e9-qwen3-0p6b-seed42/state_selection.json
 始终至少保留 1 张真正空闲 GPU。该矩阵仅是
 `gpu_chain_smoke_only`，不得进入论文主表。
 
+提交 `de681ac` 的四方法 pilot 已完成；统一 summary 位于：
+
+```text
+trace_pilot/method_pilot/de681ac-qwen3-0p6b-seed42/method_summary.json
+```
+
+summary SHA-256 为
+`acc1c94e854a38e9b3315f6a8d771b8de39188500fa36b18bcde40e32f021f73`。
+四方法 final average 排序为
+`LoRA-Null > DoRA > LoRA > LoRA-NF`；LoRA-NF 的 standard forgetting
+最低。该结果只触发一次预注册的滤波强度诊断，不改变正式结果门禁。
+
 任何 `--max-tasks`、行数、步数、生成长度或 calibration 截断都会把
 GPU 输出硬标为 `gpu_chain_smoke_only`，即使服务器有可用 GPU，也不能
 作为完整 pilot 或正式结果。

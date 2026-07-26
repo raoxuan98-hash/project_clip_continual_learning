@@ -45,7 +45,7 @@ TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
 等价测试均已通过，未引入八份阶段模型 checkpoint。TRACE 的数据读取、
 Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务×时间聚合和
 连续训练 runner、状态消融编排和 token 长度审计也已接通；当前服务器
-完整回归为 `139 passed`。长度审计进一步定位到当前训练编码的
+完整回归为 `143 passed`。长度审计进一步定位到当前训练编码的
 右截断与 TRACE 官方左截断不一致：官方 LoRA 协议仍是
 `1024 prompt + 512 answer = 1536` combined limit，但从左侧截断以保留
 回答。修复现已进入服务器复核，不再把极长 MeetingBank prompt 误解为
@@ -58,7 +58,14 @@ Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务
 `reference_fixed`：history 相对 fixed 的 final average 下降
 `0.01595`，TRACE-BWT 下降 `0.00827`，wall time 为 `1.2318×`。这些数值
 只用于选择 LoRA-NF 保护统计状态，`formal_result_eligible=false`，不得
-作为论文主表性能。
+ 作为论文主表性能。
+
+四方法同协议 TRACE-500 pilot 也已完成。final average 排序为
+LoRA-Null `0.36517`、DoRA `0.33469`、LoRA `0.32967`、LoRA-NF
+`0.31378`；LoRA-NF 的标准 forgetting 最低（`0.05919`），但当前
+`energy_fraction=0.20/leakage=0.02` 显著牺牲了任务适应。该负面 pilot
+结果已原样封存，将按目标允许的一次预注册小型滤波强度检查继续诊断，
+不会被表述为正式优势。
 
 干净提交 `2cdd550` 的 Qwen3-0.6B TRACE 最小 GPU 闭环已通过：只使用
 GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性生成、
@@ -88,6 +95,7 @@ GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性�
 - [`records/2026-07-27-01-gpu-limit-three.md`](records/2026-07-27-01-gpu-limit-three.md)：GPU 总上限由两张调整为三张，至少留一张与 CPU fallback 规则不变。
 - [`records/2026-07-27-02-trace-length-audit.md`](records/2026-07-27-02-trace-length-audit.md)：状态 pilot 在第三阶段 MeetingBank 暴露右截断问题；全量审计与官方代码核对后锁定 1536 token combined-left 协议。
 - [`records/2026-07-27-03-trace-state-selection.md`](records/2026-07-27-03-trace-state-selection.md)：combined-left 修复后的八任务状态消融、完整性哈希、低存储回收和 `reference_fixed` 选择结果。
+- [`records/2026-07-27-04-trace-four-method-pilot.md`](records/2026-07-27-04-trace-four-method-pilot.md)：LoRA/DoRA/LoRA-Null/LoRA-NF 同协议 TRACE-500 pilot、负面结果和后续单次滤波强度诊断决策。
 
 ## 文档边界
 

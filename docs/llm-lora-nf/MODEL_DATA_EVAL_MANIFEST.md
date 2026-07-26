@@ -437,6 +437,33 @@ test、最多 128 个生成 token 和 64 条 NQ calibration，完成
 两份 run 的 adapter 均在完整性/重载审计后删除，整个证据目录约 1.6 MB。
 该消融硬标 `formal_result_eligible=false`，仅确定后续 LoRA-NF 状态规则。
 
+### 8.6 TRACE-500 四方法受控 pilot
+
+预注册 spec `trace_qwen3_0p6b_method_pilot.yaml` 在干净提交
+`de681acfe3cf4dc3d7efff119696979900ffc13f` 上运行。四方法共享
+comparison hash
+`8376f1604a62ae0ebcde57d6a828000849c74bb82194fc117f4397d3fbd2993d`，
+均使用 seed 42、官方顺序、完整 500 train、前 20 test、128 new tokens
+和同一 Instruct checkpoint：
+
+| 方法 | Final average | TRACE-BWT | Standard forgetting | Wall seconds |
+|---|---:|---:|---:|---:|
+| LoRA | 0.32967 | -0.04645 | 0.08880 | 1740.32 |
+| DoRA | 0.33469 | -0.04351 | 0.07829 | 2345.82 |
+| LoRA-Null | **0.36517** | **-0.03148** | 0.06455 | 2284.54 |
+| LoRA-NF | 0.31378 | -0.03816 | **0.05919** | 2201.27 |
+
+LoRA-NF 的 forgetting 最低，但 final average 比 LoRA 低 `0.01589`，
+比 LoRA-Null 低 `0.05139`。当前强滤波设置表现为更强保留、更弱适应，
+不能据此主张总体优于基线。按目标的“关键负面结果最多一次预注册小型
+超参数检查”原则，下一步只检查少量 leakage/energy 设置；仍不改善则
+保留可信负面结论，不进行无限调参。
+
+四方法 summary SHA-256 为
+`acc1c94e854a38e9b3315f6a8d771b8de39188500fa36b18bcde40e32f021f73`；
+所有 adapter 均在完整性/重放审计后删除，证据目录约 3.1 MB。
+结果硬标 `formal_result_eligible=false`。
+
 ## 9. 两条评测轨道
 
 ### Track A：公开协议对齐
