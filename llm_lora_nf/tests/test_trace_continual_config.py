@@ -52,6 +52,14 @@ def test_trace_config_locks_attention_instruct_and_low_storage_policy():
     ]
     assert config["train"]["global_batch_size"] == 128
     assert config["train"]["learning_rate"] == 1e-4
+    assert config["train"]["max_sequence_length"] == 1536
+    assert config["train"]["truncation"] == {
+        "protocol": "trace_official_combined_left_v1",
+        "max_prompt_length": 1024,
+        "max_answer_length": 512,
+        "side": "left",
+        "preserve_response": True,
+    }
     assert config["generation"]["do_sample"] is False
     assert config["generation"]["num_beams"] == 1
     assert len(TRACE_OFFICIAL_ORDER) == 8

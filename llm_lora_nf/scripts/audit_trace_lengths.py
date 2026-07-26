@@ -105,7 +105,15 @@ def main() -> None:
         raise FileExistsError(f"Refusing to overwrite TRACE length audit: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "format_version": 1,
+        "format_version": 2,
+        "training_truncation_protocol": {
+            "name": "trace_official_combined_left_v1",
+            "max_prompt_length": 1024,
+            "max_answer_length": 512,
+            "combined_max_sequence_length": 1536,
+            "side": "left",
+            "response_only_loss": True,
+        },
         "source": source,
         "model_path": str(model_path),
         "model_integrity_manifest_sha256": model_integrity["manifest_sha256"],

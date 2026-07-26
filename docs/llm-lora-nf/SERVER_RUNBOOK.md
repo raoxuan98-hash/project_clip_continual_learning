@@ -71,7 +71,8 @@ git rev-parse HEAD
 PYTHONPATH=src "$LLM_PY" -m pytest -q
 ```
 
-TRACE 连续训练/评测链加入后的服务器结果为 `129 passed`。
+TRACE 连续训练/评测链和集成 smoke 修复加入后的服务器结果为
+`133 passed`。
 只有当前 commit 的完整结果可以写入新记录；不得沿用旧测试计数。
 
 ## 3. 模型与数据
@@ -249,6 +250,12 @@ Bubblewrap CPU 执行，封存合格结果后立即删除当前临时 merged che
 当前已核验 TRACE-500 只能运行 pilot 或 chain smoke，不能进入论文主表。
 最小链路在资源检查后使用一张合格 GPU；没有可准入 GPU 时才回退 CPU：
 
+训练预处理固定为官方锁定提交的 combined-left 语义：
+`max_prompt_len=1024`、`max_ans_len=512`、总长 1536，先构造 Instruct
+chat-template 的 prompt+answer，再从左侧裁剪并保留 response-only
+labels。不得改回 tokenizer 默认右截断，也不得因为 MeetingBank 原始
+prompt 可超过 48k token 就擅自提高所有方法的上下文预算。
+
 ```bash
 "$LLM_PY" scripts/run_trace_continual.py \
   --config configs/continual/trace_qwen3_0p6b_pilot_lora_nf_fixed.yaml \
@@ -270,6 +277,10 @@ Bubblewrap CPU 执行，封存合格结果后立即删除当前临时 merged che
 累计分支结构审计通过后删除，预测、指标、报告和哈希证据保留。正式
 `paper_5k` 必须先增加已审阅的 24 文件精确来源 manifest；在此之前
 runner 会主动拒绝 `gpu_formal`。
+
+任何 `--max-tasks`、行数、步数、生成长度或 calibration 截断都会把
+GPU 输出硬标为 `gpu_chain_smoke_only`，即使服务器有可用 GPU，也不能
+作为完整 pilot 或正式结果。
 
 ## 7. 多 seed 汇总
 

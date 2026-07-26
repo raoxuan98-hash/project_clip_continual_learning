@@ -41,8 +41,10 @@ class CharacterTokenizer:
         max_length=None,
     ):
         assert not add_special_tokens
-        assert truncation
-        return {"input_ids": [ord(character) for character in text[:max_length]]}
+        input_ids = [ord(character) for character in text]
+        if truncation:
+            input_ids = input_ids[:max_length]
+        return {"input_ids": input_ids}
 
 
 def test_response_only_labels_mask_prompt():
@@ -74,6 +76,43 @@ def test_collator_masks_padding_in_labels():
     short_length = short["input_ids"].numel()
     assert torch.all(batch["attention_mask"][0, short_length:] == 0)
     assert torch.all(batch["labels"][0, short_length:] == IGNORE_INDEX)
+
+
+def test_trace_style_left_truncation_preserves_response_tokens():
+    row = encode_chat_example(
+        ChatExample("P" * 200, "Answer"),
+        CharacterTokenizer(),
+        max_length=32,
+        truncation_strategy="left_preserve_response",
+    )
+    assert row["input_ids"].numel() == 32
+    supervised = row["labels"][row["labels"] != IGNORE_INDEX]
+    assert "".join(chr(value) for value in supervised.tolist()) == "Answer"
+
+
+def test_left_padding_keeps_labels_aligned_at_batch_end():
+    tokenizer = CharacterTokenizer()
+    short = encode_chat_example(
+        ChatExample("Q", "A"),
+        tokenizer,
+        max_length=128,
+    )
+    long = encode_chat_example(
+        ChatExample("Longer question", "Longer answer"),
+        tokenizer,
+        max_length=128,
+    )
+    batch = ResponseOnlyCollator(
+        tokenizer.pad_token_id,
+        padding_side="left",
+    )([short, long])
+    short_length = short["input_ids"].numel()
+    pad_length = long["input_ids"].numel() - short_length
+    assert torch.all(batch["attention_mask"][0, :pad_length] == 0)
+    assert torch.equal(
+        batch["labels"][0, pad_length:],
+        short["labels"],
+    )
 
 
 class OfficialCharacterTokenizer:

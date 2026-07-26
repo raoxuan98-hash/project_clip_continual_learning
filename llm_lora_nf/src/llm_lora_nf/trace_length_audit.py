@@ -94,20 +94,48 @@ def summarize_trace_token_lengths(
     for threshold in thresholds:
         if threshold <= 0:
             raise ValueError("TRACE length thresholds must be positive")
+        right_fully_truncated = sum(
+            int(record["response_start_token"]) >= threshold
+            for record in records
+        )
+        right_partially_truncated = sum(
+            int(record["full_tokens"]) > threshold
+            and int(record["response_start_token"]) < threshold
+            for record in records
+        )
+        fully_covered = sum(
+            int(record["full_tokens"]) <= threshold
+            for record in records
+        )
+        left_partial_response = sum(
+            int(record["response_tokens"]) > threshold
+            for record in records
+        )
         coverage[str(int(threshold))] = {
-            "fully_truncated_response_rows": sum(
-                int(record["response_start_token"]) >= threshold
-                for record in records
-            ),
-            "partially_truncated_full_rows": sum(
-                int(record["full_tokens"]) > threshold
-                and int(record["response_start_token"]) < threshold
-                for record in records
-            ),
-            "fully_covered_rows": sum(
-                int(record["full_tokens"]) <= threshold
-                for record in records
-            ),
+            "right_truncation": {
+                "fully_truncated_response_rows": right_fully_truncated,
+                "partially_truncated_full_rows": right_partially_truncated,
+                "fully_covered_rows": fully_covered,
+            },
+            "left_preserve_response": {
+                "prompt_left_truncated_rows": len(records) - fully_covered,
+                "fully_preserved_response_rows": (
+                    len(records) - left_partial_response
+                ),
+                "partially_truncated_response_rows": left_partial_response,
+                "fully_truncated_response_rows": 0,
+                "fully_covered_rows": fully_covered,
+                "minimum_retained_response_tokens": min(
+                    min(int(record["response_tokens"]), int(threshold))
+                    for record in records
+                ),
+            },
+            # Backward-compatible aliases describe the old right-truncation
+            # behavior so existing audit readers fail neither silently nor
+            # ambiguously.
+            "fully_truncated_response_rows": right_fully_truncated,
+            "partially_truncated_full_rows": right_partially_truncated,
+            "fully_covered_rows": fully_covered,
         }
     minimum_one_response_token = max(
         int(record["response_start_token"]) + 1

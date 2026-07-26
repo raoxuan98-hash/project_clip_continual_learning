@@ -51,6 +51,12 @@ trace:
 
 train:
   max_sequence_length: 1536
+  truncation:
+    protocol: trace_official_combined_left_v1
+    max_prompt_length: 1024
+    max_answer_length: 512
+    side: left
+    preserve_response: true
   global_batch_size: 128
   per_device_batch_size: 4
   learning_rate: 0.0001

@@ -45,7 +45,11 @@ TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
 等价测试均已通过，未引入八份阶段模型 checkpoint。TRACE 的数据读取、
 Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务×时间聚合和
 连续训练 runner、状态消融编排和 token 长度审计也已接通；当前服务器
-完整回归为 `137 passed`。正式
+完整回归基线为 `137 passed`。长度审计进一步定位到当前训练编码的
+右截断与 TRACE 官方左截断不一致：官方 LoRA 协议仍是
+`1024 prompt + 512 answer = 1536` combined limit，但从左侧截断以保留
+回答。修复现已进入服务器复核，不再把极长 MeetingBank prompt 误解为
+必须将所有方法扩展到 48k 上下文。正式
 5k/2k 数据尚未取得精确来源 manifest，因此 runner 会硬阻止正式结果，
 只允许已核验 TRACE-500 做状态消融和链路 pilot。
 
@@ -75,7 +79,7 @@ GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性�
 - [`records/2026-07-26-07-trace-data-and-cumulative-adapter.md`](records/2026-07-26-07-trace-data-and-cumulative-adapter.md)：TRACE 数据资格审计、指标定义与单最终累计 adapter 设计。
 - [`records/2026-07-26-08-trace-runner-and-metrics.md`](records/2026-07-26-08-trace-runner-and-metrics.md)：TRACE Instruct 数据、确定性评测、连续 runner、低存储烟雾测试和完整回归。
 - [`records/2026-07-27-01-gpu-limit-three.md`](records/2026-07-27-01-gpu-limit-three.md)：GPU 总上限由两张调整为三张，至少留一张与 CPU fallback 规则不变。
-- [`records/2026-07-27-02-trace-length-audit.md`](records/2026-07-27-02-trace-length-audit.md)：状态 pilot 暴露 FOMC 回答完全截断，加入全数据 chat-template token 长度审计。
+- [`records/2026-07-27-02-trace-length-audit.md`](records/2026-07-27-02-trace-length-audit.md)：状态 pilot 在第三阶段 MeetingBank 暴露右截断问题；全量审计与官方代码核对后锁定 1536 token combined-left 协议。
 
 ## 文档边界
 

@@ -53,9 +53,15 @@ def encode_chat_example(
     *,
     max_length: int,
     enable_thinking: bool = False,
+    truncation_strategy: str = "right",
 ) -> Dict[str, torch.Tensor]:
     if max_length <= 0:
         raise ValueError("max_length must be positive")
+    if truncation_strategy not in {"right", "left_preserve_response"}:
+        raise ValueError(
+            "truncation_strategy must be 'right' or "
+            "'left_preserve_response'"
+        )
     source_text = tokenizer.apply_chat_template(
         _messages(example, include_response=False),
         tokenize=False,
@@ -68,21 +74,40 @@ def encode_chat_example(
         add_generation_prompt=False,
         **_template_kwargs(enable_thinking),
     )
-    source_ids = tokenizer(
-        source_text,
-        add_special_tokens=False,
-        truncation=True,
-        max_length=max_length,
-    )["input_ids"]
-    full_ids = tokenizer(
-        full_text,
-        add_special_tokens=False,
-        truncation=True,
-        max_length=max_length,
-    )["input_ids"]
-    boundary = _longest_common_prefix(source_ids, full_ids)
-    labels = [IGNORE_INDEX] * boundary + list(full_ids[boundary:])
-    labels = labels[: len(full_ids)]
+    if truncation_strategy == "left_preserve_response":
+        source_ids = tokenizer(
+            source_text,
+            add_special_tokens=False,
+            truncation=False,
+        )["input_ids"]
+        untruncated_full_ids = tokenizer(
+            full_text,
+            add_special_tokens=False,
+            truncation=False,
+        )["input_ids"]
+        boundary = _longest_common_prefix(source_ids, untruncated_full_ids)
+        window_start = max(0, len(untruncated_full_ids) - max_length)
+        full_ids = list(untruncated_full_ids[window_start:])
+        labels = [
+            IGNORE_INDEX if window_start + index < boundary else token_id
+            for index, token_id in enumerate(full_ids)
+        ]
+    else:
+        source_ids = tokenizer(
+            source_text,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=max_length,
+        )["input_ids"]
+        full_ids = tokenizer(
+            full_text,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=max_length,
+        )["input_ids"]
+        boundary = _longest_common_prefix(source_ids, full_ids)
+        labels = [IGNORE_INDEX] * boundary + list(full_ids[boundary:])
+        labels = labels[: len(full_ids)]
     if not labels or all(label == IGNORE_INDEX for label in labels):
         raise ValueError(
             "The response was fully truncated; increase max_length or shorten the prompt"
@@ -158,6 +183,7 @@ class SupervisedChatDataset(torch.utils.data.Dataset):
         *,
         max_length: int,
         enable_thinking: bool = False,
+        truncation_strategy: str = "right",
     ) -> None:
         self.rows = [
             encode_chat_example(
@@ -165,6 +191,7 @@ class SupervisedChatDataset(torch.utils.data.Dataset):
                 tokenizer,
                 max_length=max_length,
                 enable_thinking=enable_thinking,
+                truncation_strategy=truncation_strategy,
             )
             for example in examples
         ]
@@ -186,6 +213,7 @@ class LazySupervisedChatDataset(torch.utils.data.Dataset):
         *,
         max_length: int,
         enable_thinking: bool = False,
+        truncation_strategy: str = "right",
     ) -> None:
         if not examples:
             raise ValueError("At least one chat example is required")
@@ -193,6 +221,7 @@ class LazySupervisedChatDataset(torch.utils.data.Dataset):
         self.tokenizer = tokenizer
         self.max_length = int(max_length)
         self.enable_thinking = bool(enable_thinking)
+        self.truncation_strategy = str(truncation_strategy)
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -203,6 +232,7 @@ class LazySupervisedChatDataset(torch.utils.data.Dataset):
             self.tokenizer,
             max_length=self.max_length,
             enable_thinking=self.enable_thinking,
+            truncation_strategy=self.truncation_strategy,
         )
 
 
@@ -295,8 +325,16 @@ class CalibrationCollator:
 
 
 class ResponseOnlyCollator:
-    def __init__(self, pad_token_id: int) -> None:
+    def __init__(
+        self,
+        pad_token_id: int,
+        *,
+        padding_side: str = "right",
+    ) -> None:
+        if padding_side not in {"left", "right"}:
+            raise ValueError("padding_side must be 'left' or 'right'")
         self.pad_token_id = int(pad_token_id)
+        self.padding_side = padding_side
 
     def __call__(
         self,
@@ -319,9 +357,14 @@ class ResponseOnlyCollator:
         )
         for row_index, row in enumerate(features):
             length = int(row["input_ids"].numel())
-            input_ids[row_index, :length] = row["input_ids"]
-            attention_mask[row_index, :length] = row["attention_mask"]
-            labels[row_index, :length] = row["labels"]
+            destination = (
+                slice(max_length - length, max_length)
+                if self.padding_side == "left"
+                else slice(0, length)
+            )
+            input_ids[row_index, destination] = row["input_ids"]
+            attention_mask[row_index, destination] = row["attention_mask"]
+            labels[row_index, destination] = row["labels"]
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,

@@ -36,3 +36,11 @@ def test_trace_length_summary_detects_fully_truncated_responses():
         ]
         == 1
     )
+    left = summary["coverage_by_max_sequence_length"]["1536"][
+        "left_preserve_response"
+    ]
+    assert left["prompt_left_truncated_rows"] == 1
+    assert left["fully_preserved_response_rows"] == 2
+    assert left["partially_truncated_response_rows"] == 0
+    assert left["fully_truncated_response_rows"] == 0
+    assert left["minimum_retained_response_tokens"] == 9

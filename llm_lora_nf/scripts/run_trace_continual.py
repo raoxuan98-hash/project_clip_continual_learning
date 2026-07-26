@@ -68,6 +68,10 @@ from llm_lora_nf.trace_data import (
     trace_chat_examples,
     write_trace_prediction_artifact,
 )
+from llm_lora_nf.trace_length_audit import (
+    summarize_trace_token_lengths,
+    trace_example_token_lengths,
+)
 from llm_lora_nf.trace_metrics import (
     aggregate_trace_prediction_artifacts,
     write_trace_metrics,
@@ -87,6 +91,13 @@ from llm_lora_nf.training import set_reproducible_seed, train_epochs
 TRACE_METHODS = {"lora", "dora", "lora_null", "lora_nf"}
 NATIVE_TRACE_METHODS = {"lora_null", "lora_nf"}
 PEFT_TRACE_METHODS = {"lora", "dora"}
+TRACE_TRAINING_TRUNCATION = {
+    "protocol": "trace_official_combined_left_v1",
+    "max_prompt_length": 1024,
+    "max_answer_length": 512,
+    "side": "left",
+    "preserve_response": True,
+}
 
 
 def _git_state() -> Dict[str, Any]:
@@ -377,6 +388,20 @@ def _run(args: argparse.Namespace) -> None:
         )
     )
     training_max_sequence_length = int(config["train"]["max_sequence_length"])
+    training_truncation = dict(config["train"]["truncation"])
+    if training_truncation != TRACE_TRAINING_TRUNCATION:
+        raise ValueError(
+            "TRACE training truncation must match the locked official "
+            f"protocol: {TRACE_TRAINING_TRUNCATION}"
+        )
+    if training_max_sequence_length != (
+        int(training_truncation["max_prompt_length"])
+        + int(training_truncation["max_answer_length"])
+    ):
+        raise ValueError(
+            "TRACE max_sequence_length must equal max_prompt_length + "
+            "max_answer_length"
+        )
     generation_max_prompt_length = int(
         config["generation"]["max_prompt_length"]
     )
@@ -510,6 +535,21 @@ def _run(args: argparse.Namespace) -> None:
         )
         if train_first_n is not None:
             train_rows = train_rows[: int(train_first_n)]
+        training_length_records = [
+            trace_example_token_lengths(
+                tokenizer,
+                prompt=row.prompt,
+                answer=row.answer,
+                enable_thinking=bool(
+                    config["model"].get("enable_thinking", False)
+                ),
+            )
+            for row in train_rows
+        ]
+        training_truncation_audit = summarize_trace_token_lengths(
+            training_length_records,
+            thresholds=(training_max_sequence_length,),
+        )
         training_dataset = LazySupervisedChatDataset(
             trace_chat_examples(train_rows),
             tokenizer,
@@ -517,9 +557,13 @@ def _run(args: argparse.Namespace) -> None:
             enable_thinking=bool(
                 config["model"].get("enable_thinking", False)
             ),
+            truncation_strategy="left_preserve_response",
         )
         training_generator = torch.Generator().manual_seed(task_seed)
-        collator = ResponseOnlyCollator(tokenizer.pad_token_id)
+        collator = ResponseOnlyCollator(
+            tokenizer.pad_token_id,
+            padding_side="left",
+        )
         training_batches = DataLoader(
             training_dataset,
             batch_size=int(train_config["per_device_batch_size"]),
@@ -665,6 +709,13 @@ def _run(args: argparse.Namespace) -> None:
                 "task": task,
                 "task_seed": task_seed,
                 "training": training_summary.to_dict(),
+                "training_truncation": {
+                    "protocol": training_truncation,
+                    "effective_max_sequence_length": (
+                        training_max_sequence_length
+                    ),
+                    "audit": training_truncation_audit,
+                },
                 "task_moments": task_moment_record,
                 "predictions": stage_prediction_records,
             }

@@ -341,6 +341,10 @@ SHA-256: 970ce043160f5d13fd9385c9286d0dda7e62a6cb9362bcc71e9897366250c307
 - 预注册替代顺序：
   `NumGLUE-cm → NumGLUE-ds → FOMC → 20Minuten → C-STANCE → Py150 → MeetingBank → ScienceQA`；
 - LoRA 训练 epochs 按任务依次为 `5/3/7/5/3/5/5/7`；
+- 官方 `scripts/train_lora.sh` 固定 `max_prompt_len=1024`、
+  `max_ans_len=512`；`utils/data/data_collator.py` 将二者相加为 1536
+  token 的 combined limit，并在 tokenizer `truncation_side=left` 下
+  截断 `prompt+answer`；
 - 主任务指标依次为 accuracy、accuracy、ROUGE-L、edit/fuzzy
   similarity、accuracy、accuracy、accuracy、SARI；
 - Py150 的官方 similarity 为 `0--100`，进入 OP/BWT 前除以 100；
@@ -393,6 +397,15 @@ Google Drive。不得把分别下载的相似原始数据集拼接后宣称为 T
 ### 8.4 连续训练与评测实现
 
 - TRACE split 原始顺序不变地转换为 Instruct chat template；
+- Instruct 重实现固定
+  `trace_official_combined_left_v1`：先构造完整 chat-template
+  `prompt+answer`，再从左侧裁到 `1024+512=1536` token；response-only
+  label mask 使用裁剪前的真实 assistant 边界，绝不把右截断造成的
+  “无监督回答”误判成需要提高上下文上限；
+- 每个训练 stage 在报告中封存 source/full/response token 分布，以及
+  1536 token 下 prompt 左裁、完整回答保留和回答部分裁剪的行数；
+- 训练 batch 与官方实现一致使用左 padding；生成同样采用 1024 token
+  prompt 左截断和最多 512 个新 token；
 - 生成固定 greedy、`do_sample=false`、`num_beams=1`；
 - 每个 stage 只评测所有已见任务，形成严格下三角任务×时间矩阵；
 - prediction artifact 使用确定性 gzip，并绑定 commit、模型 revision、
