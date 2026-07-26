@@ -1,6 +1,10 @@
 import json
+from pathlib import Path
 
-from llm_lora_nf.config_io import load_yaml_config
+from llm_lora_nf.config_io import (
+    canonical_comparison_config_hash,
+    load_yaml_config,
+)
 from llm_lora_nf.dataset_io import load_metamath_examples
 
 
@@ -31,3 +35,23 @@ def test_metamath_loader_preserves_official_order(tmp_path):
     examples = load_metamath_examples(str(path), first_n=2)
     assert [example.instruction for example in examples] == ["q0", "q1"]
     assert [example.response for example in examples] == ["a0", "a1"]
+
+
+def test_track_b_method_configs_share_normalized_training_protocol():
+    config_root = Path(__file__).resolve().parents[1] / "configs" / "paper"
+    methods = [
+        "lora",
+        "dora",
+        "lora_null",
+        "pissa",
+        "milora",
+        "corda",
+        "lora_nf",
+    ]
+    hashes = {
+        canonical_comparison_config_hash(
+            load_yaml_config(str(config_root / f"math_{method}.yaml"))
+        )
+        for method in methods
+    }
+    assert len(hashes) == 1

@@ -1,12 +1,13 @@
-# Versions already present in the approved server environment on 2026-07-25.
-# This file records the tested environment; it is not an instruction to install locally.
-torch==2.8.0
+# Formal runtime pins validated in the isolated server GPU environment on
+# 2026-07-26.  Torch is inherited from the working lora_nsp_llm CUDA 12.4
+# environment; the project venv must not install a second PyTorch copy.
+torch==2.5.1
+numpy>=1.26
 transformers==4.57.3
 datasets==3.6.0
 peft==0.17.1
 accelerate==1.10.1
-trl==0.24.0
+# ModelScope is an acquisition-only dependency. Formal training is offline.
 modelscope==1.30.0
 PyYAML>=6.0
 pytest>=8.0
-

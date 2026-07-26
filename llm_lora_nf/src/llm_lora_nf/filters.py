@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional
+import weakref
 
 import torch
 import torch.nn as nn
@@ -44,6 +45,10 @@ class HardLeakyFilter(nn.Module):
             "leakage",
             torch.tensor(float(leakage), dtype=torch.float32),
         )
+        self._reuse_limit = 1
+        self._cached_input_ref = None
+        self._cached_output: Optional[torch.Tensor] = None
+        self._cached_uses = 0
 
     @staticmethod
     def _validate_basis(basis: torch.Tensor, input_dim: int) -> None:
@@ -68,6 +73,25 @@ class HardLeakyFilter(nn.Module):
         self.protected_basis = basis.detach().clone()
         if leakage is not None:
             self.leakage.fill_(float(leakage))
+        self.clear_runtime_cache()
+
+    def configure_runtime_reuse(self, calls_per_input: int) -> None:
+        """Reuse one exact factorized projection for shared q/k/v inputs."""
+
+        if calls_per_input <= 0:
+            raise ValueError("calls_per_input must be positive")
+        self._reuse_limit = int(calls_per_input)
+        self.clear_runtime_cache()
+
+    def clear_runtime_cache(self) -> None:
+        self._cached_input_ref = None
+        self._cached_output = None
+        self._cached_uses = 0
+
+    def _apply_filter(self, x: torch.Tensor) -> torch.Tensor:
+        basis = self.protected_basis.to(device=x.device, dtype=x.dtype)
+        coefficient = 1.0 - self.leakage.to(device=x.device, dtype=x.dtype)
+        return x - coefficient * ((x @ basis) @ basis.transpose(0, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] != self.input_dim:
@@ -76,9 +100,27 @@ class HardLeakyFilter(nn.Module):
             )
         if self.is_identity:
             return x
-        basis = self.protected_basis.to(device=x.device, dtype=x.dtype)
-        coefficient = 1.0 - self.leakage.to(device=x.device, dtype=x.dtype)
-        return x - coefficient * ((x @ basis) @ basis.transpose(0, 1))
+        cached_input = (
+            self._cached_input_ref()
+            if self._cached_input_ref is not None
+            else None
+        )
+        if (
+            self._reuse_limit > 1
+            and cached_input is x
+            and self._cached_output is not None
+        ):
+            output = self._cached_output
+            self._cached_uses += 1
+            if self._cached_uses >= self._reuse_limit:
+                self.clear_runtime_cache()
+            return output
+        output = self._apply_filter(x)
+        if self._reuse_limit > 1:
+            self._cached_input_ref = weakref.ref(x)
+            self._cached_output = output
+            self._cached_uses = 1
+        return output
 
     def dense(self, *, device=None, dtype=None) -> torch.Tensor:
         device = self.protected_basis.device if device is None else device
@@ -134,13 +176,24 @@ def build_hard_leaky_filter(
     original_device = second_moment.device
     source_dtype = second_moment.dtype
     matrix = second_moment.detach().to(device="cpu", dtype=torch.float64)
-    matrix = torch.nan_to_num(matrix, nan=0.0, posinf=1.0, neginf=-1.0)
+    if not torch.isfinite(matrix).all():
+        raise ValueError("second_moment contains non-finite values")
     matrix = 0.5 * (matrix + matrix.transpose(0, 1))
     if ridge:
         matrix = matrix + ridge * torch.eye(matrix.shape[0], dtype=matrix.dtype)
 
     eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
-    eigenvalues = eigenvalues.abs()
+    spectral_scale = max(
+        1.0,
+        float(eigenvalues.abs().max().item()),
+    )
+    minimum = float(eigenvalues.min().item())
+    if minimum < -1e-6 * spectral_scale:
+        raise ValueError(
+            "second_moment is materially non-PSD after symmetrization/ridge: "
+            f"minimum_eigenvalue={minimum}, spectral_scale={spectral_scale}"
+        )
+    eigenvalues = eigenvalues.clamp_min(0.0)
     tail_dimension = _tail_dimension(eigenvalues, energy_fraction)
     protected_basis = eigenvectors[:, tail_dimension:]
     output_dtype = source_dtype if basis_dtype is None else basis_dtype
@@ -164,4 +217,3 @@ def build_hard_leaky_filter(
         protected_dimension=second_moment.shape[0] - tail_dimension,
         captured_tail_energy=captured,
     )
-

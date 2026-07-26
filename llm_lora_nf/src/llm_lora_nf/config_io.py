@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -42,6 +43,26 @@ def canonical_config_hash(config: Mapping[str, Any]) -> str:
         ensure_ascii=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_comparison_config_hash(config: Mapping[str, Any]) -> str:
+    """Hash the training fields that must be identical across methods.
+
+    Only run identity/seed and explicitly permitted method selectors are
+    removed. Any other accidental method-specific override changes this hash
+    and therefore blocks paired aggregation.
+    """
+
+    normalized = copy.deepcopy(dict(config))
+    run = normalized.get("run")
+    if isinstance(run, dict):
+        run.pop("seed", None)
+        run.pop("name", None)
+    adapter = normalized.get("adapter")
+    if isinstance(adapter, dict):
+        adapter.pop("method", None)
+        adapter.pop("corda_mode", None)
+    return canonical_config_hash(normalized)
 
 
 def adapter_config_from_mapping(payload: Mapping[str, Any]) -> AdapterConfig:

@@ -3,8 +3,10 @@ import torch
 from llm_lora_nf.data import (
     IGNORE_INDEX,
     ChatExample,
+    OFFICIAL_LORA_NULL_PROMPT,
     ResponseOnlyCollator,
     encode_chat_example,
+    encode_official_lora_null_math_example,
 )
 
 
@@ -72,3 +74,32 @@ def test_collator_masks_padding_in_labels():
     short_length = short["input_ids"].numel()
     assert torch.all(batch["attention_mask"][0, short_length:] == 0)
     assert torch.all(batch["labels"][0, short_length:] == IGNORE_INDEX)
+
+
+class OfficialCharacterTokenizer:
+    eos_token = "<eos>"
+    pad_token_id = 0
+
+    def __call__(self, text, *, padding, truncation, max_length):
+        assert padding == "longest"
+        assert truncation
+        return {"input_ids": [ord(character) for character in text[:max_length]]}
+
+
+def test_official_lora_null_formatter_uses_repository_prompt():
+    tokenizer = OfficialCharacterTokenizer()
+    row = encode_official_lora_null_math_example(
+        ChatExample("Compute 1+1.", "2"),
+        tokenizer,
+        max_length=512,
+    )
+    source = OFFICIAL_LORA_NULL_PROMPT.format(instruction="Compute 1+1.")
+    assert row["input_ids"][: len(source)].tolist() == [
+        ord(character) for character in source
+    ]
+    assert torch.all(row["labels"][: len(source)] == IGNORE_INDEX)
+    supervised = "".join(
+        chr(value)
+        for value in row["labels"][row["labels"] != IGNORE_INDEX].tolist()
+    )
+    assert supervised == "2<eos>"

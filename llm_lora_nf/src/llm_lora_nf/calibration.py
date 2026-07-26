@@ -24,6 +24,10 @@ class SecondMomentAccumulator:
         self.observations = 0
 
     @torch.no_grad()
+    def move_to(self, device: torch.device) -> None:
+        self.sum_xtx = self.sum_xtx.to(device=device)
+
+    @torch.no_grad()
     def update(
         self,
         activations: torch.Tensor,
@@ -51,9 +55,12 @@ class SecondMomentAccumulator:
             raise ValueError("Expected 2D or 3D activations")
         if flat.numel() == 0:
             return
-        flat_cpu = flat.to(device="cpu", dtype=torch.float32)
-        self.sum_xtx.add_(flat_cpu.transpose(0, 1) @ flat_cpu)
-        self.observations += int(flat_cpu.shape[0])
+        flat_work = flat.to(
+            device=self.sum_xtx.device,
+            dtype=self.sum_xtx.dtype,
+        )
+        self.sum_xtx.add_(flat_work.transpose(0, 1) @ flat_work)
+        self.observations += int(flat_work.shape[0])
 
     def finalize(self, ridge: float = 0.0) -> SecondMomentState:
         if self.observations <= 0:
@@ -62,7 +69,10 @@ class SecondMomentAccumulator:
         matrix = 0.5 * (matrix + matrix.transpose(0, 1))
         if ridge:
             matrix = matrix + ridge * torch.eye(self.input_dim, dtype=matrix.dtype)
-        return SecondMomentState(matrix=matrix, observations=self.observations)
+        return SecondMomentState(
+            matrix=matrix.to(device="cpu"),
+            observations=self.observations,
+        )
 
 
 def _projection_candidates(model: nn.Module) -> "OrderedDict[str, Tuple[str, nn.Module]]":
@@ -103,6 +113,8 @@ class ActivationCalibrator:
         device: torch.device,
         max_batches: Optional[int] = None,
     ) -> Dict[str, SecondMomentState]:
+        for accumulator in self.accumulators.values():
+            accumulator.move_to(device)
         handles = []
         for group, (_, module) in self.candidates.items():
             accumulator = self.accumulators[group]
@@ -175,4 +187,3 @@ def build_and_assign_filters(
         {group: result.filter for group, result in results.items()},
     )
     return results
-

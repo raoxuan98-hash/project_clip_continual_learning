@@ -43,11 +43,20 @@ class FilteredLoRALinear(nn.Module):
 
         device = base_layer.weight.device
         dtype = base_layer.weight.dtype
+        adapter_dtype = torch.float32
         self.lora_A = nn.Linear(
-            self.in_features, self.rank, bias=False, device=device, dtype=dtype
+            self.in_features,
+            self.rank,
+            bias=False,
+            device=device,
+            dtype=adapter_dtype,
         )
         self.lora_B = nn.Linear(
-            self.rank, self.out_features, bias=False, device=device, dtype=dtype
+            self.rank,
+            self.out_features,
+            bias=False,
+            device=device,
+            dtype=adapter_dtype,
         )
         self.dropout = nn.Dropout(dropout)
         self.filter = HardLeakyFilter(self.in_features, leakage=1.0).to(
@@ -55,11 +64,11 @@ class FilteredLoRALinear(nn.Module):
         )
         self.register_buffer(
             "base_offset_A",
-            torch.empty(0, self.in_features, device=device, dtype=dtype),
+            torch.empty(0, self.in_features, device=device, dtype=adapter_dtype),
         )
         self.register_buffer(
             "base_offset_B",
-            torch.empty(self.out_features, 0, device=device, dtype=dtype),
+            torch.empty(self.out_features, 0, device=device, dtype=adapter_dtype),
         )
         self.register_buffer("merged", torch.tensor(False, device=device))
         self.reset_lora_parameters()
@@ -82,6 +91,21 @@ class FilteredLoRALinear(nn.Module):
             ),
             leakage=float(filter_module.leakage.item()),
         )
+
+    @torch.no_grad()
+    def share_filter(self, filter_module: HardLeakyFilter) -> None:
+        """Attach a shared group filter without cloning its protected basis."""
+
+        if filter_module.input_dim != self.in_features:
+            raise ValueError(
+                f"Filter input_dim {filter_module.input_dim} does not match "
+                f"layer input {self.in_features}"
+            )
+        filter_module.to(
+            device=self.base_layer.weight.device,
+            dtype=self.base_layer.weight.dtype,
+        )
+        self.filter = filter_module
 
     def adapter_input(self, x: torch.Tensor) -> torch.Tensor:
         if self.use_filter:
@@ -119,14 +143,18 @@ class FilteredLoRALinear(nn.Module):
         if self.has_base_offset:
             raise RuntimeError("A decomposition initialization is already installed")
         offset_A = lora_A.to(
-            device=self.base_layer.weight.device,
-            dtype=self.base_layer.weight.dtype,
+            device=self.lora_A.weight.device,
+            dtype=self.lora_A.weight.dtype,
         )
         offset_B = lora_B.to(
+            device=self.lora_B.weight.device,
+            dtype=self.lora_B.weight.dtype,
+        )
+        base_delta = (offset_B @ offset_A).to(
             device=self.base_layer.weight.device,
             dtype=self.base_layer.weight.dtype,
         )
-        self.base_layer.weight.sub_(self.scaling * (offset_B @ offset_A))
+        self.base_layer.weight.sub_(self.scaling * base_delta)
         self.lora_A.weight.copy_(offset_A)
         self.lora_B.weight.copy_(offset_B)
         self.base_offset_A = offset_A.detach().clone()
@@ -142,8 +170,9 @@ class FilteredLoRALinear(nn.Module):
         base = self.base_layer(x)
         if bool(self.merged.item()):
             return base
-        adapter = self.lora_B(self.lora_A(self.adapter_input(x)))
-        return base + self.scaling * adapter
+        adapter_input = self.adapter_input(x).to(dtype=self.lora_A.weight.dtype)
+        adapter = self.lora_B(self.lora_A(adapter_input))
+        return base + (self.scaling * adapter).to(dtype=base.dtype)
 
     def delta_weight(self) -> torch.Tensor:
         delta = self.lora_B.weight @ self.lora_A.weight
@@ -178,14 +207,14 @@ class FilteredLoRALinear(nn.Module):
         self.base_offset_A = torch.empty(
             0,
             self.in_features,
-            device=self.base_layer.weight.device,
-            dtype=self.base_layer.weight.dtype,
+            device=self.lora_A.weight.device,
+            dtype=self.lora_A.weight.dtype,
         )
         self.base_offset_B = torch.empty(
             self.out_features,
             0,
-            device=self.base_layer.weight.device,
-            dtype=self.base_layer.weight.dtype,
+            device=self.lora_B.weight.device,
+            dtype=self.lora_B.weight.dtype,
         )
         self.merged.fill_(False)
 

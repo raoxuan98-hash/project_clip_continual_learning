@@ -1,0 +1,48 @@
+# LLM LoRA-NF 开发文档
+
+本目录保存 LoRA-NF 从 CLIP 扩展到 0.6B--3B 大语言模型的目标、执行约束和开发记录。
+
+LLM 开发必须与当前 CLIP 代码隔离。目标已经用户批准；后续实现和服务器
+实验仍须遵守 `GOAL.md` 的资源、镜像、证据和低存储约束。
+
+## 当前状态
+
+**状态：已批准；隔离实现与论文级门控已完成，本批远程测试通过。**
+
+用户已于 2026-07-25 明确回复“开始执行”。当前已完成七方法统一链路、
+Track A、checkpoint/export/evaluator、统计、正式配置硬门控与
+content-addressed calibration cache；正式流水线另已加入“单最终 adapter +
+单临时 merged checkpoint”低存储保留策略。2026-07-26 已在隔离 GPU
+环境完成 `89 passed`，并验证 RTX 4090 CUDA 前后向。当前 6 张 GPU 均有
+约 16--17 GB 显存占用，因此正式实验等待资源准入，不是 CUDA 故障。
+
+本轮静态审阅进一步固定了训练 seed 与 lm-eval seed 的边界、CPU smoke
+禁用全量 request cache、共享 base evaluation 的内容寻址复用，以及
+merged 槽位的跨进程流水线锁。随后又将标准 LoRA 基线切换为锁定的
+PEFT 0.17.1，加入 CorDA 临时校准文件精确回收、LoRA-NF 二阶统计
+PSD 硬校验，以及训练、评测、汇总三层源码/软件环境身份绑定；这些变更
+已在服务器锁定依赖环境中通过完整测试。
+
+## 文件索引
+
+- [`GOAL.md`](GOAL.md)：完整目标、范围、强制约束和完成标准。
+- [`METHOD_SPEC.md`](METHOD_SPEC.md)：从当前 CLIP 实现审计得到的 LLM LoRA-NF 数学与实现规范。
+- [`MODEL_DATA_EVAL_MANIFEST.md`](MODEL_DATA_EVAL_MANIFEST.md)：模型、数据、镜像、训练和评测版本清单。
+- [`SERVER_RUNBOOK.md`](SERVER_RUNBOOK.md)：远程测试、gate、主矩阵、低存储评测和汇总命令。
+- [`records/`](records/)：LLM 开发线的决策、实现、测试、实验和结果记录。
+- [`records/2026-07-25-01-goal-definition.md`](records/2026-07-25-01-goal-definition.md)：目标形成过程和当前审批状态。
+- [`records/2026-07-25-02-server-resource-policy.md`](records/2026-07-25-02-server-resource-policy.md)：GPU 上限、空闲 GPU 和 CPU 链路验证规则。
+- [`records/2026-07-25-03-v4-review-decisions.md`](records/2026-07-25-03-v4-review-decisions.md)：自审后的方法位置、Instruct、Git 上传边界和可验收性修订。
+- [`records/2026-07-25-04-phase-minus1-start.md`](records/2026-07-25-04-phase-minus1-start.md)：目标获批、方法审计和服务器首轮核验。
+- [`records/2026-07-25-11-track-b-lora-null-calibration.md`](records/2026-07-25-11-track-b-lora-null-calibration.md)：Track B LoRA-Null 官方 calibration 修正。
+- [`records/2026-07-25-12-cache-and-formal-protocol-guards.md`](records/2026-07-25-12-cache-and-formal-protocol-guards.md)：校准缓存、比较 hash 和正式配置硬门控。
+- [`records/2026-07-26-01-formal-training-and-integrity-chain.md`](records/2026-07-26-01-formal-training-and-integrity-chain.md)：正式训练语义、环境锁与端到端完整性链。
+- [`records/2026-07-26-02-checkpoint-retention-policy.md`](records/2026-07-26-02-checkpoint-retention-policy.md)：checkpoint 数量和低存储保留硬约束。
+- [`records/2026-07-26-03-storage-baseline-and-provenance-audit.md`](records/2026-07-26-03-storage-baseline-and-provenance-audit.md)：PEFT LoRA 基线、缓存/临时文件回收、滤波统计安全和派生证据来源审计。
+
+## 文档边界
+
+- 本目录：专门记录 LLM LoRA-NF 开发线。
+- `chat-history/`：继续保存项目级工程协作摘要，并链接本目录的详细记录。
+- `chat-history-for-paper-writing/`：保存论文主张、章节组织和叙事变化。
+- 现有 CLIP 文档与代码：在 LLM 目标获批前保持不变。

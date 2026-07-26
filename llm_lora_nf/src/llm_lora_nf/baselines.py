@@ -35,7 +35,7 @@ def _scaled_factors_from_svd(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if rank > min(matrix.shape):
         raise ValueError(f"rank {rank} exceeds matrix shape {tuple(matrix.shape)}")
-    work = matrix.detach().to(device="cpu", dtype=torch.float64)
+    work = matrix.detach().to(dtype=torch.float32)
     left, singular_values, right_h = torch.linalg.svd(work, full_matrices=False)
     if select == "largest":
         left = left[:, :rank]
@@ -85,26 +85,35 @@ def initialize_lora_null(
 ) -> InitializationRecord:
     """Apply the official LoRA-Null low-activation-subspace initialization.
 
-    Track B differs from the official repository only in target scope: this
-    function operates on already-injected attention-only modules.
+    The runner supplies moments collected with the official raw-character-span
+    sampler and signed-global-maximum normalization. This function operates on
+    already-injected attention-only modules, which is the intentional Track B
+    target-scope difference.
     """
 
     dimensions: Dict[str, int] = {}
+    low_bases: Dict[str, torch.Tensor] = {}
     count = 0
     for name, module in adapter_modules(model):
         group = attention_group_key(name)
         if group not in moments:
             raise KeyError(f"Missing LoRA-Null calibration moment for {group}")
-        covariance = moments[group].matrix.to(device="cpu", dtype=torch.float64)
-        _, eigenvectors = torch.linalg.eigh(
-            0.5 * (covariance + covariance.transpose(0, 1))
-        )
-        if module.rank > eigenvectors.shape[1]:
-            raise ValueError(
-                f"rank {module.rank} exceeds input dimension for {name}"
+        if group not in low_bases:
+            covariance = moments[group].matrix.to(
+                device="cpu",
+                dtype=torch.float32,
             )
-        low_basis = eigenvectors[:, : module.rank]
-        weight = module.base_layer.weight.detach().to(device="cpu", dtype=torch.float64)
+            left, _, _ = torch.linalg.svd(covariance, full_matrices=False)
+            if module.rank > left.shape[1]:
+                raise ValueError(
+                    f"rank {module.rank} exceeds input dimension for {name}"
+                )
+            low_bases[group] = left[:, -module.rank :]
+        low_basis = low_bases[group]
+        weight = module.base_layer.weight.detach().to(
+            device="cpu",
+            dtype=torch.float32,
+        )
         lora_A, lora_B = _scaled_factors_from_projected_weight(
             weight,
             low_basis,
@@ -121,6 +130,11 @@ def initialize_lora_null(
         details={
             "subspace": "lowest_activation_energy",
             "target_scope": "attention_only",
+            "moment_decomposition": "torch.linalg.svd_left_tail",
+            "moment_decomposition_dtype": "float32",
+            "unique_moment_decompositions": len(low_bases),
+            "calibration_sampling": "official_raw_character_spans",
+            "calibration_normalization": "abs(signed_global_max)",
             "dimensions": dimensions,
         },
     )
@@ -129,8 +143,10 @@ def initialize_lora_null(
 @torch.no_grad()
 def initialize_milora(model: nn.Module) -> InitializationRecord:
     count = 0
+    devices = set()
     for _, module in adapter_modules(model):
         weight = module.base_layer.weight.detach()
+        devices.add(str(weight.device))
         lora_A, lora_B = _scaled_factors_from_svd(
             weight,
             rank=module.rank,
@@ -144,7 +160,13 @@ def initialize_milora(model: nn.Module) -> InitializationRecord:
         module_count=count,
         exact_function_preserving=True,
         calibration_required=False,
-        details={"singular_values": "smallest", "target_scope": "attention_only"},
+        details={
+            "singular_values": "smallest",
+            "target_scope": "attention_only",
+            "svd_dtype": "float32",
+            "svd_devices": sorted(devices),
+            "official_commit": "c3c94693b26c800a96dba84a1fe92d7384b7c28d",
+        },
     )
 
 

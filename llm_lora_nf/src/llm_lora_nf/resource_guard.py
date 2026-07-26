@@ -78,6 +78,15 @@ def decide_admission(
             max_utilization_percent=max_utilization_percent,
         )
     ]
+    if requested == 0:
+        return AdmissionDecision(
+            mode="cpu_smoke_only",
+            selected_gpu_indices=[],
+            idle_gpu_indices=idle,
+            reason=(
+                "no GPUs requested; CPU smoke reserves every currently idle GPU"
+            ),
+        )
     allowed = max(0, min(requested, 2, len(idle) - reserve_idle))
     selected = idle[:allowed]
     if selected:
@@ -109,9 +118,7 @@ def inspect_admission(requested: int = 2) -> AdmissionDecision:
 
 
 @contextmanager
-def project_gpu_lock(
-    path: str = "/tmp/llm_lora_nf_gpu.lock",
-):
+def project_file_lock(path: str):
     lock_path = Path(path)
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -121,3 +128,10 @@ def project_gpu_lock(
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
 
+
+@contextmanager
+def project_gpu_lock(
+    path: str = "/tmp/llm_lora_nf_gpu.lock",
+):
+    with project_file_lock(path):
+        yield

@@ -1,0 +1,59 @@
+run:
+  name: track_b_math_knowledge
+  seed: 42
+  execution_mode: gpu_formal
+
+evaluator:
+  repository: EleutherAI/lm-evaluation-harness
+  revision: 6d642546f4688648fced259eb3302efd36ece5af
+  version: v0.4.12
+  seeds:
+    random: 0
+    numpy: 1234
+    torch: 1234
+    fewshot: 1234
+
+prompt:
+  apply_chat_template: true
+  fewshot_as_multiturn: true
+  enable_thinking: false
+
+tasks:
+  downstream:
+    - gsm8k_cot
+    - minerva_math500
+  retention:
+    - triviaqa
+    - nq_open
+    - webqs
+
+metrics:
+  gsm8k_cot: exact_match,flexible-extract
+  minerva_math500: math_verify,none
+  triviaqa: exact_match,remove_whitespace
+  nq_open: exact_match,remove_whitespace
+  webqs: exact_match,none
+
+runtime:
+  batch_size: auto
+  max_batch_size: 8
+  dtype: float32
+  log_samples: true
+  cache_requests: true
+
+datasets:
+  openai/gsm8k:
+    config: main
+    revision: 740312add88f781978c0658806c59bc2815b9866
+  HuggingFaceH4/MATH-500:
+    config: default
+    revision: 6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be
+  mandarjoshi/trivia_qa:
+    config: rc.nocontext
+    revision: 0f7faf33a3908546c6fd5b73a660e0f8ff173c2f
+  google-research-datasets/nq_open:
+    config: null
+    revision: 5dd9790a83002ad084ddeb7c420dc716852c6f28
+  web_questions:
+    config: null
+    revision: 0e473cbe21d1e91ec18da343644498be6a3f5454

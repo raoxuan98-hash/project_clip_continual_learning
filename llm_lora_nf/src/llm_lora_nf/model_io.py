@@ -1,9 +1,12 @@
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+
+from .integrity import INTEGRITY_FILENAME, sha256_file
 
 
 QWEN3_POST_TRAINED_IDS = {
@@ -26,6 +29,9 @@ class ModelLoadRecord:
     local_files_only: bool
     tokenizer_class: str
     model_class: str
+    snapshot_manifest_sha256: Optional[str]
+    snapshot_integrity_sha256: Optional[str]
+    snapshot_revision: Optional[str]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -70,13 +76,27 @@ def load_instruct_model(
 
     source_id = requested_id if source_id is None else source_id
     snapshot_manifest = Path(resolved_path) / "local_snapshot_manifest.json"
+    snapshot_manifest_sha256 = None
+    snapshot_integrity_sha256 = None
+    snapshot_revision = None
     if snapshot_manifest.exists():
+        snapshot_manifest_sha256 = hashlib.sha256(
+            snapshot_manifest.read_bytes()
+        ).hexdigest()
         snapshot = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
         actual_source = snapshot.get("model_id")
         if actual_source and actual_source != source_id:
             raise ValueError(
                 f"Resolved snapshot is {actual_source!r}, expected source {source_id!r}"
             )
+        snapshot_revision = (
+            snapshot.get("modelscope_revision")
+            or snapshot.get("requested_revision")
+            or snapshot.get("revision")
+        )
+    snapshot_integrity = Path(resolved_path) / INTEGRITY_FILENAME
+    if snapshot_integrity.exists():
+        snapshot_integrity_sha256 = sha256_file(snapshot_integrity)
 
     if device == "cpu":
         load_dtype = torch.float32 if torch_dtype is None else torch_dtype
@@ -116,5 +136,10 @@ def load_instruct_model(
         local_files_only=local_files_only,
         tokenizer_class=type(tokenizer).__name__,
         model_class=type(model).__name__,
+        snapshot_manifest_sha256=snapshot_manifest_sha256,
+        snapshot_integrity_sha256=snapshot_integrity_sha256,
+        snapshot_revision=(
+            str(snapshot_revision) if snapshot_revision is not None else None
+        ),
     )
     return model, tokenizer, record

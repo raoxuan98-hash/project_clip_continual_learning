@@ -6,19 +6,24 @@ import torch
 import torch.nn as nn
 
 from .config import AdapterConfig
-from .inject import adapter_modules, inject_attention_adapters
+from .filters import HardLeakyFilter
+from .inject import (
+    adapter_modules,
+    assign_group_filters,
+    attention_group_key,
+    inject_attention_adapters,
+)
 from .layers import FilteredLoRALinear
 
 
-CHECKPOINT_FORMAT_VERSION = 1
+CHECKPOINT_FORMAT_VERSION = 2
+SUPPORTED_CHECKPOINT_FORMATS = {1, 2}
 
 
 def _module_payload(module: FilteredLoRALinear) -> Dict[str, torch.Tensor]:
     return {
         "lora_A": module.lora_A.weight.detach().cpu(),
         "lora_B": module.lora_B.weight.detach().cpu(),
-        "protected_basis": module.filter.protected_basis.detach().cpu(),
-        "leakage": module.filter.leakage.detach().cpu(),
         "base_offset_A": module.base_offset_A.detach().cpu(),
         "base_offset_B": module.base_offset_B.detach().cpu(),
     }
@@ -39,12 +44,21 @@ def save_native_adapter(
     }
     if not modules:
         raise ValueError("No native adapter modules found")
+    filters: Dict[str, Dict[str, torch.Tensor]] = {}
+    for name, module in adapter_modules(model):
+        group = attention_group_key(name)
+        if group not in filters:
+            filters[group] = {
+                "protected_basis": module.filter.protected_basis.detach().cpu(),
+                "leakage": module.filter.leakage.detach().cpu(),
+            }
     weights_path = destination / "adapter.pt"
     manifest_path = destination / "adapter_manifest.json"
     torch.save(
         {
             "format_version": CHECKPOINT_FORMAT_VERSION,
             "modules": modules,
+            "filters": filters,
         },
         weights_path,
     )
@@ -52,6 +66,7 @@ def save_native_adapter(
         "format_version": CHECKPOINT_FORMAT_VERSION,
         "adapter_config": adapter_config.to_dict(),
         "module_names": sorted(modules),
+        "filter_groups": sorted(filters),
         "metadata": dict(metadata),
     }
     manifest_path.write_text(
@@ -77,7 +92,8 @@ def load_native_adapter(
         map_location="cpu",
         weights_only=True,
     )
-    if payload.get("format_version") != CHECKPOINT_FORMAT_VERSION:
+    format_version = payload.get("format_version")
+    if format_version not in SUPPORTED_CHECKPOINT_FORMATS:
         raise ValueError("Unsupported native adapter checkpoint format")
     wrapped = inject_attention_adapters(model, adapter_config)
     saved_modules = payload["modules"]
@@ -102,11 +118,22 @@ def load_native_adapter(
                 dtype=module.lora_B.weight.dtype,
             )
         )
-        module.filter.set_basis(
-            saved["protected_basis"].to(
-                device=module.base_layer.weight.device,
-                dtype=module.base_layer.weight.dtype,
-            ),
-            leakage=float(saved["leakage"].item()),
-        )
+        if format_version == 1:
+            module.filter.set_basis(
+                saved["protected_basis"].to(
+                    device=module.base_layer.weight.device,
+                    dtype=module.base_layer.weight.dtype,
+                ),
+                leakage=float(saved["leakage"].item()),
+            )
+    if format_version == 2:
+        filters = {
+            group: HardLeakyFilter(
+                input_dim=int(saved["protected_basis"].shape[0]),
+                protected_basis=saved["protected_basis"],
+                leakage=float(saved["leakage"].item()),
+            )
+            for group, saved in payload["filters"].items()
+        }
+        assign_group_filters(model, filters)
     return manifest

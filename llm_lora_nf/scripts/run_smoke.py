@@ -25,8 +25,12 @@ from llm_lora_nf.data import (
     synthetic_smoke_examples,
 )
 from llm_lora_nf.inject import count_parameters
+from llm_lora_nf.integrity import (
+    validate_directory_integrity,
+    write_directory_integrity,
+)
 from llm_lora_nf.model_io import load_instruct_model
-from llm_lora_nf.resource_guard import inspect_admission
+from llm_lora_nf.resource_guard import inspect_admission, project_gpu_lock
 from llm_lora_nf.result_metadata import RunMetadata
 from llm_lora_nf.training import set_reproducible_seed, train_steps
 
@@ -60,13 +64,7 @@ def _logits(model: Any, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
     return model(**_model_inputs(batch)).logits.detach().cpu()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Remote-only Qwen/Llama smoke run")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--model-path", required=True)
-    parser.add_argument("--output-dir", required=True)
-    args = parser.parse_args()
-
+def _run(args: argparse.Namespace) -> None:
     config = load_yaml_config(args.config)
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     git_state = _git_state()
@@ -78,7 +76,14 @@ def main() -> None:
     if smoke_config.get("collect_formal_metrics", False):
         raise ValueError("CPU smoke must not collect formal metrics")
 
-    admission = inspect_admission(requested=2)
+    output_dir = Path(args.output_dir).resolve()
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise FileExistsError(
+            f"Refusing to overwrite non-empty smoke output: {output_dir}"
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    admission = inspect_admission(requested=0)
     device = torch.device("cpu")
     seed = int(run_config["seed"])
     set_reproducible_seed(seed)
@@ -149,7 +154,6 @@ def main() -> None:
         seed=seed,
         commit_sha=git_state["commit_sha"],
     )
-    output_dir = Path(args.output_dir).resolve()
     save_native_adapter(
         model,
         str(output_dir / "checkpoint"),
@@ -159,6 +163,10 @@ def main() -> None:
             "config_hash": canonical_config_hash(config),
             "source_dirty": git_state["source_dirty"],
         },
+    )
+    checkpoint_integrity = write_directory_integrity(
+        str(output_dir / "checkpoint"),
+        kind="adapter_checkpoint",
     )
     del model
     gc.collect()
@@ -170,6 +178,10 @@ def main() -> None:
         checkpoint_type=model_config["checkpoint_type"],
         device=str(device),
         local_files_only=True,
+    )
+    validate_directory_integrity(
+        str(output_dir / "checkpoint"),
+        expected_kind="adapter_checkpoint",
     )
     load_native_adapter(
         reloaded_model,
@@ -244,14 +256,24 @@ def main() -> None:
             "formal_result_eligible": False,
         },
         "training": training_summary.to_dict(),
+        "checkpoint_integrity": checkpoint_integrity,
         "generation_text": generated_text,
     }
-    output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "smoke_report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     print(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Remote-only Qwen/Llama smoke run")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--output-dir", required=True)
+    args = parser.parse_args()
+    with project_gpu_lock():
+        _run(args)
 
 
 if __name__ == "__main__":

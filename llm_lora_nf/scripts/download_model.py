@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from llm_lora_nf.integrity import write_directory_integrity
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -60,6 +62,11 @@ def main() -> None:
         if not path.is_file():
             continue
         relative = str(path.relative_to(resolved))
+        if relative in {
+            "local_snapshot_manifest.json",
+            "artifact_integrity.json",
+        }:
+            continue
         record = {"path": relative, "size_bytes": path.stat().st_size}
         remote = remote_by_path.get(relative)
         if remote is not None:
@@ -87,7 +94,20 @@ def main() -> None:
         json.dumps(record, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    print(json.dumps(record, indent=2, sort_keys=True))
+    integrity = write_directory_integrity(
+        str(resolved),
+        kind="model_snapshot",
+    )
+    print(
+        json.dumps(
+            {
+                "snapshot": record,
+                "integrity": integrity,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

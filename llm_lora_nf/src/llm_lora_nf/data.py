@@ -5,6 +5,11 @@ import torch
 
 
 IGNORE_INDEX = -100
+OFFICIAL_LORA_NULL_PROMPT = (
+    "Below is an instruction that describes a task. "
+    "Write a response that appropriately completes the request.\n\n"
+    "### Instruction:\n{instruction}\n\n### Response:"
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,62 @@ def encode_chat_example(
     }
 
 
+def encode_official_lora_null_math_example(
+    example: ChatExample,
+    tokenizer: Any,
+    *,
+    max_length: int,
+) -> Dict[str, torch.Tensor]:
+    """Reproduce the official LoRA-Null MetaMathQA training formatter.
+
+    Track A intentionally uses the repository's Alpaca-style prompt instead of
+    an Instruct checkpoint's chat template. The source and source+target are
+    tokenized independently with the tokenizer defaults, matching the official
+    ``train_model.py`` preprocessing path.
+    """
+
+    if max_length <= 0:
+        raise ValueError("max_length must be positive")
+    if example.input_text or example.system:
+        raise ValueError(
+            "The official LoRA-Null math protocol accepts query/response only"
+        )
+    if tokenizer.eos_token is None:
+        raise ValueError("The official LoRA-Null formatter requires an EOS token")
+    source = OFFICIAL_LORA_NULL_PROMPT.format(
+        instruction=example.instruction
+    )
+    target = f"{example.response}{tokenizer.eos_token}"
+    source_ids = tokenizer(
+        source,
+        padding="longest",
+        truncation=True,
+        max_length=max_length,
+    )["input_ids"]
+    full_ids = tokenizer(
+        source + target,
+        padding="longest",
+        truncation=True,
+        max_length=max_length,
+    )["input_ids"]
+    source_length = sum(
+        int(token_id != tokenizer.pad_token_id) for token_id in source_ids
+    )
+    labels = list(full_ids)
+    labels[: min(source_length, len(labels))] = [IGNORE_INDEX] * min(
+        source_length, len(labels)
+    )
+    if not labels or all(label == IGNORE_INDEX for label in labels):
+        raise ValueError(
+            "The response was fully truncated; increase max_length or shorten the prompt"
+        )
+    return {
+        "input_ids": torch.tensor(full_ids, dtype=torch.long),
+        "attention_mask": torch.ones(len(full_ids), dtype=torch.long),
+        "labels": torch.tensor(labels, dtype=torch.long),
+    }
+
+
 class SupervisedChatDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -142,6 +203,33 @@ class LazySupervisedChatDataset(torch.utils.data.Dataset):
             self.tokenizer,
             max_length=self.max_length,
             enable_thinking=self.enable_thinking,
+        )
+
+
+class OfficialLoRANullMathDataset(torch.utils.data.Dataset):
+    """Lazy MetaMathQA dataset for the isolated Track A reproduction."""
+
+    def __init__(
+        self,
+        examples: Sequence[ChatExample],
+        tokenizer: Any,
+        *,
+        max_length: int,
+    ) -> None:
+        if not examples:
+            raise ValueError("At least one chat example is required")
+        self.examples = examples
+        self.tokenizer = tokenizer
+        self.max_length = int(max_length)
+
+    def __len__(self) -> int:
+        return len(self.examples)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        return encode_official_lora_null_math_example(
+            self.examples[index],
+            self.tokenizer,
+            max_length=self.max_length,
         )
 
 

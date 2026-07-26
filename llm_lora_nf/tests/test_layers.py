@@ -146,3 +146,25 @@ def test_decomposition_initialization_preserves_original_function():
     x = torch.randn(5, 8)
     torch.testing.assert_close(layer(x), original(x), atol=1e-6, rtol=1e-5)
     assert layer.has_base_offset
+
+
+def test_bf16_base_uses_fp32_trainable_adapters():
+    torch.manual_seed(31)
+    base = nn.Linear(8, 6).to(dtype=torch.bfloat16)
+    layer = FilteredLoRALinear(
+        base,
+        rank=3,
+        alpha=3,
+        dropout=0.0,
+    )
+    assert layer.base_layer.weight.dtype == torch.bfloat16
+    assert layer.lora_A.weight.dtype == torch.float32
+    assert layer.lora_B.weight.dtype == torch.float32
+    with torch.no_grad():
+        layer.lora_B.weight.normal_(0.0, 0.1)
+    x = torch.randn(4, 8, dtype=torch.bfloat16)
+    output = layer(x)
+    assert output.dtype == torch.bfloat16
+    output.float().square().mean().backward()
+    assert layer.lora_A.weight.grad.dtype == torch.float32
+    assert layer.lora_B.weight.grad.dtype == torch.float32

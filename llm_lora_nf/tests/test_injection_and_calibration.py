@@ -107,4 +107,10 @@ def test_calibration_shares_qkv_and_masks_padding():
     torch.testing.assert_close(
         q_basis, modules["self_attn.v_proj"].filter.protected_basis
     )
-
+    assert modules["self_attn.q_proj"].filter is modules["self_attn.k_proj"].filter
+    assert modules["self_attn.q_proj"].filter is modules["self_attn.v_proj"].filter
+    assert (
+        modules["self_attn.q_proj"].filter.protected_basis.data_ptr()
+        == modules["self_attn.v_proj"].filter.protected_basis.data_ptr()
+    )
+    assert modules["self_attn.o_proj"].filter is not modules["self_attn.q_proj"].filter

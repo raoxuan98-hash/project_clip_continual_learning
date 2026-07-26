@@ -1,0 +1,5 @@
+extends: math_base.yaml
+
+model:
+  id: Qwen/Qwen2.5-1.5B-Instruct
+  source_id: Qwen/Qwen2.5-1.5B-Instruct

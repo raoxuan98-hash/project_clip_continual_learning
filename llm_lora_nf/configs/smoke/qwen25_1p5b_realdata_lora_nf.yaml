@@ -1,0 +1,11 @@
+extends: qwen3_realdata_base.yaml
+
+run:
+  name: qwen25_1p5b_realdata_lora_nf_smoke
+
+model:
+  id: Qwen/Qwen2.5-1.5B-Instruct
+  source_id: Qwen/Qwen2.5-1.5B-Instruct
+
+adapter:
+  method: lora_nf

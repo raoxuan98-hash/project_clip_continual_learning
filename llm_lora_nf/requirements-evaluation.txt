@@ -1,0 +1,2 @@
+# Official evaluator locked by configs/evaluation/track_b_math_knowledge.yaml.
+lm_eval[hf,math] @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@6d642546f4688648fced259eb3302efd36ece5af

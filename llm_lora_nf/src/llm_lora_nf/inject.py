@@ -1,5 +1,6 @@
 from typing import Dict, Iterator, Tuple
 
+import torch
 import torch.nn as nn
 
 from .config import AdapterConfig
@@ -72,15 +73,40 @@ def assign_group_filters(
     group_filters: Dict[str, HardLeakyFilter],
 ) -> None:
     missing = []
+    prepared: Dict[str, HardLeakyFilter] = {}
     for name, module in adapter_modules(model):
         key = attention_group_key(name)
         filter_module = group_filters.get(key)
         if filter_module is None:
             missing.append(key)
             continue
-        module.set_filter(filter_module)
+        if key not in prepared:
+            filter_module.to(
+                device=module.base_layer.weight.device,
+                dtype=module.base_layer.weight.dtype,
+            )
+            filter_module.configure_runtime_reuse(
+                3 if key.endswith(".qkv_shared") else 1
+            )
+            prepared[key] = filter_module
+        module.share_filter(prepared[key])
     if missing:
         raise KeyError("Missing filters for groups: " + ", ".join(sorted(set(missing))))
+
+
+@torch.no_grad()
+def merge_native_adapters(model: nn.Module) -> Dict[str, nn.Linear]:
+    """Merge native adapters and restore standard ``nn.Linear`` modules."""
+
+    merged: Dict[str, nn.Linear] = {}
+    for name, module in list(adapter_modules(model)):
+        module.merge()
+        parent, leaf = _parent_and_leaf(model, name)
+        setattr(parent, leaf, module.base_layer)
+        merged[name] = module.base_layer
+    if not merged:
+        raise ValueError("No native adapter modules found")
+    return merged
 
 
 def count_parameters(model: nn.Module) -> Dict[str, int]:

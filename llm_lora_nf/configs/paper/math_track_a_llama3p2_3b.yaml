@@ -1,0 +1,86 @@
+protocol_track: A
+protocol_label: lora_null_protocol_aligned_instruct
+official_commit: 1e6808abb81fe10e50b8172c40ac9a8ab4f11e83
+
+run:
+  seed: 42
+  execution_mode: gpu_formal
+
+artifact_retention:
+  base_snapshots_per_revision: 1
+  final_adapter_checkpoints_per_run: 1
+  save_intermediate_checkpoints: false
+  save_optimizer_state: false
+  save_scheduler_state: false
+  merged_checkpoint_policy: ephemeral_delete_after_qualified_evaluation
+  max_concurrent_merged_checkpoints: 1
+  request_cache_scope: shared_content_addressed_per_base_model_protocol
+
+model:
+  id: meta-llama/Llama-3.2-3B-Instruct
+  source_id: LLM-Research/Llama-3.2-3B-Instruct
+  checkpoint_type: instruct
+  local_files_only: true
+  enable_thinking: false
+  null_calibration_activation_dtype: float16
+  null_decomposition_install_dtype: float32
+  training_parameter_dtype: float32
+
+adapter:
+  method: lora_null
+  rank: 128
+  alpha: 128
+  dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+calibration:
+  dataset: nq_open
+  revision: 5dd9790a83002ad084ddeb7c420dc716852c6f28
+  samples: 256
+  seed: 233
+  batch_size: 1
+  max_sequence_length: 2048
+  sampling: raw_character_spans
+  per_sample_normalization: abs_of_signed_global_max
+  sample_divisor: 256
+
+train:
+  dataset: metamathqa
+  revision: aa4f34d3d2d3231299b5b03d9b3e5a20da45aa18
+  first_n: 100000
+  prompt_format: official_lora_null_alpaca_style
+  max_sequence_length: 512
+  epochs: 1
+  per_device_batch_size: 1
+  global_batch_size: 128
+  optimizer: adamw_torch
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 0.00000001
+  max_grad_norm: 1.0
+  learning_rate: 0.00002
+  weight_decay: 0.0
+  scheduler: cosine
+  warmup_ratio: 0.03
+  response_only_loss: true
+  precision: bf16
+  tf32: true
+  gradient_checkpointing: true
+  reference_trainer_version: 4.47.0
+  reference_trainer_commit: 5d7739f15a6e50de416977fe2cc9cb516d67edda
+  optimizer_steps_per_epoch: 781
+  consumed_examples_per_epoch: 99968
+  discarded_examples_per_epoch: 32
+  accumulation_remainder_policy: drop
+
+evaluation:
+  config: ../evaluation/track_b_math_knowledge.yaml
+  downstream: [gsm8k_cot, minerva_math500]
+  retention: [triviaqa, nq_open, webqs]
