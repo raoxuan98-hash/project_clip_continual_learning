@@ -76,3 +76,28 @@ def test_trace_history_ablation_changes_only_declared_state_rule():
     fixed["trace"].pop("state_update")
     history["trace"].pop("state_update")
     assert fixed == history
+
+
+def test_trace_four_method_pilot_is_preregistered_and_nonformal():
+    spec = _load("trace_qwen3_0p6b_method_pilot.yaml")
+    assert spec["format_version"] == 1
+    assert list(spec["jobs"]) == [
+        "lora",
+        "dora",
+        "lora_null",
+        "lora_nf",
+    ]
+    assert spec["pilot_overrides"] == {
+        "train_first_n": None,
+        "test_first_n": 20,
+        "max_steps": None,
+        "max_new_tokens": 128,
+        "calibration_samples": 64,
+        "delete_checkpoint_after_smoke": True,
+    }
+    assert spec["resources"] == {
+        "max_parallel_gpus": 3,
+        "reserve_idle_gpus": 1,
+    }
+    assert spec["qualification"]["formal_result_eligible"] is False
+    assert spec["locked_lora_nf_state"] == "reference_fixed"

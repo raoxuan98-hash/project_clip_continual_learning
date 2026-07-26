@@ -1,0 +1,34 @@
+format_version: 1
+name: trace_qwen3_0p6b_four_method_pilot
+seed: 42
+order: official
+
+jobs:
+  lora:
+    config: trace_qwen3_0p6b_pilot_lora.yaml
+  dora:
+    config: trace_qwen3_0p6b_pilot_dora.yaml
+  lora_null:
+    config: trace_qwen3_0p6b_pilot_lora_null.yaml
+  lora_nf:
+    config: trace_qwen3_0p6b_pilot_lora_nf_fixed.yaml
+
+pilot_overrides:
+  train_first_n: null
+  test_first_n: 20
+  max_steps: null
+  max_new_tokens: 128
+  calibration_samples: 64
+  delete_checkpoint_after_smoke: true
+
+resources:
+  max_parallel_gpus: 3
+  reserve_idle_gpus: 1
+
+qualification:
+  data_protocol: treelora_500_pilot
+  execution_mode: gpu_chain_smoke_only
+  formal_result_eligible: false
+  purpose: controlled_four_method_trace500_pilot_after_state_selection
+
+locked_lora_nf_state: reference_fixed

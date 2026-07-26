@@ -290,6 +290,13 @@ trace_pilot/state_ablation/74a34e9-qwen3-0p6b-seed42/state_selection.json
 `903310fbc4ad36cac31c26b75eacf1e8163d6bbef8df8d718c94d37f3cf58abd`。
 该文件只决定状态规则，不具备正式结果资格。
 
+四方法 TRACE-500 受控 pilot 的预注册 spec 为
+`configs/continual/trace_qwen3_0p6b_method_pilot.yaml`。它固定 seed 42、
+官方顺序、完整 500 条任务训练集、前 20 条测试、128 个生成 token、
+64 条 calibration 和审计后删除 adapter。最多并行 3 个单卡 run，且
+始终至少保留 1 张真正空闲 GPU。该矩阵仅是
+`gpu_chain_smoke_only`，不得进入论文主表。
+
 任何 `--max-tasks`、行数、步数、生成长度或 calibration 截断都会把
 GPU 输出硬标为 `gpu_chain_smoke_only`，即使服务器有可用 GPU，也不能
 作为完整 pilot 或正式结果。
