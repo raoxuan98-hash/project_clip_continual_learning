@@ -19,6 +19,9 @@ export LLM_DATA_ROOT=/home/raoxuan/projects/data/llm_lora_nf
 export TRAIN_ROOT="$LLM_DATA_ROOT/formal_training"
 export MERGED_ROOT="$LLM_DATA_ROOT/ephemeral_merged"
 export EVAL_ROOT="$LLM_DATA_ROOT/formal_evaluation"
+export CODE_MERGED_ROOT="$LLM_DATA_ROOT/code_ephemeral_merged"
+export CODE_GENERATION_ROOT="$LLM_DATA_ROOT/code_generation"
+export CODE_EXECUTION_ROOT="$LLM_DATA_ROOT/code_execution"
 export REQUEST_CACHE_ROOT="$LLM_DATA_ROOT/request_cache"
 export EVAL_HF_HOME="$LLM_DATA_ROOT/eval_hf_cache"
 export EVAL_MANIFEST="$EVAL_HF_HOME/math_knowledge_prepare_manifest_v2.json"
@@ -64,9 +67,8 @@ git rev-parse HEAD
 PYTHONPATH=src "$LLM_PY" -m pytest -q
 ```
 
-提交 `006805ed39193d12406d242874f44e75c45b278c` 的结果为
-`102 passed`。只有当前 commit 的完整结果可以写入新记录；不得沿用旧
-测试计数。
+代码评测低存储编排和跨 seed 汇总加入后的服务器结果为 `105 passed`。
+只有当前 commit 的完整结果可以写入新记录；不得沿用旧测试计数。
 
 ## 3. 模型与数据
 
@@ -198,27 +200,24 @@ python scripts/launch_math_evaluation.py \
   --output-root "$TRAIN_ROOT/code"
 ```
 
-单 run EvalPlus 必须分成生成与执行，不允许在模型进程中直接运行生成代码：
+正式评测使用可恢复的低存储 launcher。它逐个执行 FP32 导出、GPU 生成和
+Bubblewrap CPU 执行，封存合格结果后立即删除当前临时 merged checkpoint：
 
 ```bash
-"$LLM_PY" scripts/run_evalplus_codegen.py \
-  --config configs/evaluation/track_b_code_evalplus.yaml \
+"$LLM_PY" scripts/launch_code_evaluation.py \
+  --matrix configs/paper/code_matrix.yaml \
+  --stage protocol_gate \
+  --training-output-root "$TRAIN_ROOT/code" \
+  --merged-output-root "$CODE_MERGED_ROOT" \
+  --generation-output-root "$CODE_GENERATION_ROOT" \
+  --execution-output-root "$CODE_EXECUTION_ROOT" \
+  --evaluation-config configs/evaluation/track_b_code_evalplus.yaml \
   --evaluator-path "$EVALPLUS_PATH" \
-  --model-path /path/to/base-or-ephemeral-fp32-merged \
-  --model-role merged \
-  --model-manifest /path/to/merged_export_manifest.json \
-  --dataset-manifest "$EVALPLUS_MANIFEST" \
-  --output-dir "$EVAL_ROOT/code_generation/model/method/seed"
-
-"$LLM_PY" scripts/run_evalplus_sandbox.py \
-  --config configs/evaluation/track_b_code_evalplus.yaml \
-  --evaluator-path "$EVALPLUS_PATH" \
-  --dataset-manifest "$EVALPLUS_MANIFEST" \
-  --generation-dir "$EVAL_ROOT/code_generation/model/method/seed" \
-  --output-dir "$EVAL_ROOT/code_execution/model/method/seed"
+  --dataset-manifest "$EVALPLUS_MANIFEST"
 ```
 
-第二步硬要求服务器可用的 Bubblewrap，清空继承环境并禁用网络。只有
+内部仍严格把生成与执行分开，不允许在模型进程中运行生成代码。执行阶段
+硬要求服务器可用的 Bubblewrap，清空继承环境并禁用网络。只有
 `code_execution_run.json` 标记 formal、raw result 完整性封存成功后，才
 允许按第 6 节规则精确删除该 run 的临时 merged checkpoint。
 
@@ -258,6 +257,28 @@ python scripts/aggregate_seed_results.py \
 
 实际主表需传入同模型、同 track 的全部方法和 seeds，不只示例中的三项。
 输出必须位于 raw evaluation 目录之外。
+
+代码任务使用独立汇总器，`--run-dir` 传入同一模型全部方法的 3-seed
+`code_execution` 目录；`--base-run-dir` 传入 launcher 生成的唯一共享
+base execution：
+
+```bash
+"$LLM_PY" scripts/aggregate_evalplus_seed_results.py \
+  --run-dir "$CODE_EXECUTION_ROOT/main/llama3p2_3b/lora/seed_42" \
+  --run-dir "$CODE_EXECUTION_ROOT/main/llama3p2_3b/lora/seed_43" \
+  --run-dir "$CODE_EXECUTION_ROOT/main/llama3p2_3b/lora/seed_44" \
+  --base-run-dir /exact/path/from/code_evaluation_launcher_manifest.json \
+  --expected-seeds 42,43,44 \
+  --reference-method lora_nf \
+  --output "$EVAL_ROOT/code_main_seed_aggregate.json"
+```
+
+上例只展示一个方法的参数形状；正式命令必须追加该模型七种方法的全部
+21 个 `--run-dir`。汇总器重新核验 generation/execution 两层目录完整性、
+训练 seed、最终 adapter 哈希、临时 merged 导出身份、评测数据/evaluator、
+源码 commit 与软件环境，并报告 mean、sample standard deviation、
+seed-level bootstrap 95% CI、LoRA-NF 相对各基线的同 seed 配对差值，以及
+每种方法相对共享 base 的变化。
 
 样本级配对 bootstrap 对每个“LoRA-NF vs baseline、同模型、同训练 seed”
 分别运行：

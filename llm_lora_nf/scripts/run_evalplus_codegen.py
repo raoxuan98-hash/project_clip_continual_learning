@@ -255,6 +255,7 @@ def _run(args: argparse.Namespace) -> None:
         },
         "config_hash": config_hash,
         "protocol_config_hash": protocol_hash,
+        "seed": int(config["run"]["seed"]),
         "model_role": args.model_role,
         "model_path": str(model_path),
         "model_manifest": model["manifest"],

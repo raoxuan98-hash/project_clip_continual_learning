@@ -18,6 +18,17 @@ from llm_lora_nf.evalplus_results import (
 from llm_lora_nf.protocol_validation import (
     validate_formal_code_evaluation_config,
 )
+from llm_lora_nf.integrity import write_directory_integrity
+from scripts.launch_code_evaluation import (
+    _completed_codegen,
+    _completed_execution,
+)
+from scripts.aggregate_evalplus_seed_results import (
+    METRICS,
+    _aggregate_group,
+    _validate_execution_run,
+    _validate_paired_compatibility,
+)
 
 
 CONFIG_PATH = (
@@ -230,3 +241,239 @@ def test_evalplus_sample_and_result_metrics_are_recomputed(tmp_path):
         result_module.EVALPLUS_DATASETS = original
     assert metrics["base_pass_at_1"] == 1.0
     assert metrics["plus_pass_at_1"] == 0.5
+
+
+def test_code_evaluation_launcher_resume_requires_sealed_formal_outputs(
+    tmp_path,
+):
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    (generation / "code_generation_run.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "status": "generated",
+                "formal_result_eligible": True,
+                "execution_mode": "gpu_formal",
+                "model_role": "merged",
+                "source": {
+                    "commit_sha": "source",
+                    "source_dirty": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_directory_integrity(
+        str(generation),
+        kind="code_generation_output",
+    )
+    assert _completed_codegen(generation, expected_role="merged")
+    assert not _completed_codegen(generation, expected_role="base")
+
+    execution = tmp_path / "execution"
+    execution.mkdir()
+    (execution / "code_execution_run.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "status": "passed",
+                "formal_result_eligible": True,
+                "execution_mode": "cpu_sandbox_formal",
+                "source": {
+                    "commit_sha": "source",
+                    "source_dirty": False,
+                },
+                "metrics": {
+                    "humaneval_pass_at_1": 0.1,
+                    "humaneval_plus_pass_at_1": 0.05,
+                    "mbpp_pass_at_1": 0.2,
+                    "mbpp_plus_pass_at_1": 0.1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_directory_integrity(
+        str(execution),
+        kind="code_execution_output",
+    )
+    assert _completed_execution(execution)
+
+
+def _aggregate_fixture(method, seed, score):
+    return {
+        "seed": seed,
+        "model_id": "qwen3_0_6b",
+        "method": method,
+        "protocol_track": "B",
+        "base_snapshot_integrity_sha256": "base-sha",
+        "training_commit_sha": "source-sha",
+        "training_protocol_config_hash": f"{method}-protocol",
+        "training_comparison_config_hash": "comparison-sha",
+        "training_environment_identity": {"software": "training"},
+        "evaluation_protocol_config_hash": "eval-protocol",
+        "dataset_evidence": {"manifest_sha256": "dataset-sha"},
+        "evaluator": {"commit_sha": "evaluator-sha"},
+        "code_evaluation_packages": {"evalplus": "0.3.1"},
+        "evaluation_software_environment": {"python": "3.10.20"},
+        "source": {
+            "commit_sha": "source-sha",
+            "source_dirty": False,
+        },
+        "formal_result_eligible": True,
+        "metrics": {metric: score for metric in METRICS},
+        "run_dir": f"/execution/{method}/{seed}",
+        "run_report_sha256": f"report-{method}-{seed}",
+        "generation_dir": f"/generation/{method}/{seed}",
+    }
+
+
+def test_evalplus_seed_aggregation_and_paired_identity_are_exact():
+    rows = [
+        _aggregate_fixture("lora_nf", seed, score)
+        for seed, score in ((42, 0.4), (43, 0.5), (44, 0.6))
+    ]
+    aggregate = _aggregate_group(
+        rows,
+        expected_seeds=[42, 43, 44],
+        bootstrap_samples=100,
+        base_metrics={metric: 0.25 for metric in METRICS},
+    )
+    assert aggregate["metrics"]["humaneval_pass_at_1"]["mean"] == 0.5
+    assert (
+        aggregate["adapted_minus_base"]["humaneval_pass_at_1"]["mean"]
+        == 0.25
+    )
+
+    comparison = _aggregate_group(
+        [
+            _aggregate_fixture("lora", seed, score)
+            for seed, score in ((42, 0.3), (43, 0.4), (44, 0.5))
+        ],
+        expected_seeds=[42, 43, 44],
+        bootstrap_samples=100,
+    )
+    _validate_paired_compatibility(aggregate, comparison)
+    comparison["training_comparison_config_hash"] = "drifted"
+    with pytest.raises(ValueError, match="normalized training protocol"):
+        _validate_paired_compatibility(aggregate, comparison)
+
+    with pytest.raises(ValueError, match="exact seeds"):
+        _aggregate_group(
+            rows[:2],
+            expected_seeds=[42, 43, 44],
+            bootstrap_samples=100,
+        )
+
+
+def test_evalplus_aggregation_revalidates_generation_and_execution(tmp_path):
+    environment = {
+        "python": "3.10.20",
+        "packages": {"torch": "2.5.1"},
+        "installed_distributions_sha256": "environment-sha",
+        "torch_cuda_version": "12.4",
+        "cudnn_version": 90100,
+    }
+    source = {"commit_sha": "source-sha", "source_dirty": False}
+    evaluator = {"commit_sha": "evaluator-sha", "source_dirty": False}
+    dataset_evidence = {"manifest_sha256": "dataset-sha"}
+    packages = {"evalplus": "0.3.1"}
+    model_manifest = {
+        "formal_result_eligible": True,
+        "execution_mode": "gpu_formal",
+        "dtype": "torch.float32",
+        "checkpoint_retention": (
+            "ephemeral_delete_after_qualified_evaluation"
+        ),
+        "base_model_integrity_manifest_sha256": "base-sha",
+        "training_seed": 42,
+        "training_model_id": "qwen3_0_6b",
+        "training_commit_sha": "source-sha",
+        "method": "lora_nf",
+        "protocol_track": "B",
+        "run_id": "fixture",
+        "training_protocol_config_hash": "training-protocol",
+        "training_comparison_config_hash": "comparison-protocol",
+        "training_environment_identity": {"software": "training"},
+        "checkpoint_integrity_manifest_sha256": "adapter-manifest-sha",
+        "checkpoint_integrity_tree_sha256": "adapter-tree-sha",
+    }
+    generation_dir = tmp_path / "generation"
+    generation_dir.mkdir()
+    samples = {}
+    for dataset in ("humaneval", "mbpp"):
+        path = generation_dir / f"{dataset}_samples.jsonl"
+        path.write_text(
+            json.dumps({"task_id": f"{dataset}/0", "solution": "pass"})
+            + "\n",
+            encoding="utf-8",
+        )
+        samples[dataset] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()
+        }
+    generation_report = {
+        "format_version": 1,
+        "status": "generated",
+        "formal_result_eligible": True,
+        "execution_mode": "gpu_formal",
+        "source": source,
+        "evaluator": evaluator,
+        "protocol_config_hash": "evaluation-protocol",
+        "seed": 42,
+        "model_role": "merged",
+        "model_manifest": model_manifest,
+        "model_integrity": {"manifest_sha256": "merged-sha"},
+        "dataset_evidence": dataset_evidence,
+        "samples": samples,
+        "environment": environment,
+        "code_evaluation_packages": packages,
+    }
+    (generation_dir / "code_generation_run.json").write_text(
+        json.dumps(generation_report),
+        encoding="utf-8",
+    )
+    generation_integrity = write_directory_integrity(
+        str(generation_dir),
+        kind="code_generation_output",
+    )
+
+    execution_dir = tmp_path / "execution"
+    execution_dir.mkdir()
+    for dataset in ("humaneval", "mbpp"):
+        (execution_dir / f"{dataset}_samples.jsonl").write_bytes(
+            (generation_dir / f"{dataset}_samples.jsonl").read_bytes()
+        )
+    execution_report = {
+        "format_version": 1,
+        "status": "passed",
+        "formal_result_eligible": True,
+        "execution_mode": "cpu_sandbox_formal",
+        "source": source,
+        "evaluator": evaluator,
+        "protocol_config_hash": "evaluation-protocol",
+        "seed": 42,
+        "generation_dir": str(generation_dir.resolve()),
+        "generation_integrity": generation_integrity,
+        "generation_report": generation_report,
+        "dataset_evidence": dataset_evidence,
+        "sandbox": {"network": "disabled", "unshare_all": True},
+        "metrics": {metric: 0.5 for metric in METRICS},
+        "environment": environment,
+        "code_evaluation_packages": packages,
+    }
+    (execution_dir / "code_execution_run.json").write_text(
+        json.dumps(execution_report),
+        encoding="utf-8",
+    )
+    write_directory_integrity(
+        str(execution_dir),
+        kind="code_execution_output",
+    )
+    record = _validate_execution_run(
+        execution_dir,
+        allow_cpu_smoke=False,
+    )
+    assert record["seed"] == 42
+    assert record["method"] == "lora_nf"
+    assert record["base_snapshot_integrity_sha256"] == "base-sha"

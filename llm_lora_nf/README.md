@@ -137,6 +137,13 @@ v0.2.0. Greedy FP32 generation writes one solution per task. Generated code is
 never executed in the model process: `run_evalplus_sandbox.py` clears inherited
 environment variables and uses networkless Bubblewrap namespaces with read-only
 software/data mounts before recomputing original and Plus pass@1.
+`launch_code_evaluation.py` makes this sequence resumable while allowing only
+one ephemeral FP32 merged checkpoint at a time; that checkpoint is deleted only
+after the sealed sandbox result is revalidated. Export, generation, and
+execution reports bind the training seed, model ID, final-adapter integrity,
+source commit, and exact evaluation evidence. `aggregate_evalplus_seed_results.py`
+then enforces the exact `42,43,44` seed set and reports seed-level uncertainty,
+paired LoRA-NF-minus-baseline deltas, and adapted-minus-shared-base changes.
 
 The similarly named Hugging Face `evalplus/*` auto-converted datasets were
 audited and rejected as formal overrides because they do not retain EvalPlus's

@@ -290,6 +290,11 @@ SHA-256: 35eaabc524ee6b04b3323b63bfe0cb03146b2ec578632d94f5ff5eff8688020b
   `max(1 second, ground-truth time × 4)`；`test_details=false` 只做
   fail-fast，不改变 pass/fail；
 - 空或不可编译的模型输出计为失败，不把整次 run 判为流水线故障。
+- 每个正式 adapted run 的导出、生成和沙箱报告显式绑定训练 seed、训练
+  model ID、最终 adapter integrity、training/evaluation commit 和协议
+  hash；三 seed 汇总只接受精确 `{42,43,44}`，并计算 mean、sample
+  standard deviation、seed-level bootstrap 95% CI、LoRA-NF 对各基线的
+  同 seed 配对差值及 adapted 相对共享 base 的变化。
 
 HF-Mirror 的 `evalplus/humanevalplus` 与 `evalplus/mbppplus` 固定 revision
 已核验，但其自动转换格式只有合并后的 `test` 代码，不含 official

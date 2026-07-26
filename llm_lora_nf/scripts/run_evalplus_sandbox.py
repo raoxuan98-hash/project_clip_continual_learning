@@ -216,6 +216,7 @@ def _run(args: argparse.Namespace) -> None:
             or generation.get("evaluator", {}).get("commit_sha")
             != evaluator["commit_sha"]
             or generation.get("protocol_config_hash") != protocol_hash
+            or generation.get("seed") != int(config["run"]["seed"])
             or generation.get("dataset_evidence") != data
         ):
             raise ValueError("Code generation evidence/protocol mismatch")
@@ -351,6 +352,8 @@ def _run(args: argparse.Namespace) -> None:
         },
         "config_hash": config_hash,
         "protocol_config_hash": protocol_hash,
+        "seed": int(config["run"]["seed"]),
+        "generation_dir": str(generation_dir),
         "generation_integrity": generation_integrity,
         "generation_report": generation,
         "dataset_evidence": data,

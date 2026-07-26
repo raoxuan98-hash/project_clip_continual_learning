@@ -267,6 +267,8 @@ def main() -> None:
             "formal_result_eligible": eligible,
             "execution_mode": report["metadata"]["execution_mode"],
             "run_id": report["metadata"]["run_id"],
+            "training_seed": int(report["metadata"]["seed"]),
+            "training_model_id": str(report["metadata"]["model_id"]),
             "training_commit_sha": report["metadata"]["commit_sha"],
             "training_protocol_config_hash": report.get(
                 "protocol_config_hash",
@@ -285,6 +287,9 @@ def main() -> None:
             "checkpoint_manifest_sha256": checkpoint_manifest_sha256,
             "checkpoint_integrity_manifest_sha256": checkpoint_integrity[
                 "manifest_sha256"
+            ],
+            "checkpoint_integrity_tree_sha256": checkpoint_integrity[
+                "tree_sha256"
             ],
             "base_model": load_record.to_dict(),
             "base_model_integrity_manifest_sha256": (
