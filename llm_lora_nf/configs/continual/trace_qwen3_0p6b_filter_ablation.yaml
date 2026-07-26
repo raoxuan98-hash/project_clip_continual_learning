@@ -1,0 +1,55 @@
+format_version: 1
+name: trace_qwen3_0p6b_lora_nf_filter_ablation
+seed: 42
+order: official
+
+settings:
+  e20_r02:
+    source: existing_method_pilot
+    energy_fraction: 0.20
+    leakage: 0.02
+  e20_r05:
+    config: trace_qwen3_0p6b_pilot_lora_nf_e20_r05.yaml
+    energy_fraction: 0.20
+    leakage: 0.05
+  e20_r10:
+    config: trace_qwen3_0p6b_pilot_lora_nf_e20_r10.yaml
+    energy_fraction: 0.20
+    leakage: 0.10
+  e20_r20:
+    config: trace_qwen3_0p6b_pilot_lora_nf_e20_r20.yaml
+    energy_fraction: 0.20
+    leakage: 0.20
+  e10_r10:
+    config: trace_qwen3_0p6b_pilot_lora_nf_e10_r10.yaml
+    energy_fraction: 0.10
+    leakage: 0.10
+
+pilot_overrides:
+  train_first_n: null
+  test_first_n: 20
+  max_steps: null
+  max_new_tokens: 128
+  calibration_samples: 64
+  delete_checkpoint_after_smoke: true
+
+selection:
+  reference_method: lora
+  maximum_final_average_gap: 0.005
+  minimum_forgetting_improvement: 0.010
+  maximum_final_bwt_regression: 0.005
+  tie_break_order:
+    - highest_final_average
+    - lowest_forgetting
+    - highest_bwt
+  default_on_failed_gate: e20_r02
+
+resources:
+  max_parallel_gpus: 3
+  reserve_idle_gpus: 1
+
+qualification:
+  data_protocol: treelora_500_pilot
+  execution_mode: gpu_chain_smoke_only
+  formal_result_eligible: false
+  purpose: one_preregistered_filter_strength_check_after_negative_pilot

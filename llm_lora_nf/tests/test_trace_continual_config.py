@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 
 from llm_lora_nf.artifact_retention import validate_artifact_retention
@@ -101,3 +102,44 @@ def test_trace_four_method_pilot_is_preregistered_and_nonformal():
     }
     assert spec["qualification"]["formal_result_eligible"] is False
     assert spec["locked_lora_nf_state"] == "reference_fixed"
+
+
+def test_trace_filter_check_is_small_preregistered_and_fixed_state():
+    spec = _load("trace_qwen3_0p6b_filter_ablation.yaml")
+    assert list(spec["settings"]) == [
+        "e20_r02",
+        "e20_r05",
+        "e20_r10",
+        "e20_r20",
+        "e10_r10",
+    ]
+    assert spec["selection"] == {
+        "reference_method": "lora",
+        "maximum_final_average_gap": 0.005,
+        "minimum_forgetting_improvement": 0.01,
+        "maximum_final_bwt_regression": 0.005,
+        "tie_break_order": [
+            "highest_final_average",
+            "lowest_forgetting",
+            "highest_bwt",
+        ],
+        "default_on_failed_gate": "e20_r02",
+    }
+    base = _load("trace_qwen3_0p6b_pilot_lora_nf_fixed.yaml")
+    for setting in ("e20_r05", "e20_r10", "e20_r20", "e10_r10"):
+        config = _load(
+            f"trace_qwen3_0p6b_pilot_lora_nf_{setting}.yaml"
+        )
+        assert config["trace"]["state_update"] == "reference_fixed"
+        assert config["adapter"]["method"] == "lora_nf"
+        assert config["adapter"]["filter"]["energy_fraction"] == (
+            spec["settings"][setting]["energy_fraction"]
+        )
+        assert config["adapter"]["filter"]["leakage"] == (
+            spec["settings"][setting]["leakage"]
+        )
+        normalized = copy.deepcopy(config)
+        reference = copy.deepcopy(base)
+        normalized["run"]["name"] = reference["run"]["name"]
+        normalized["adapter"]["filter"] = reference["adapter"]["filter"]
+        assert normalized == reference

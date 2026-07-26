@@ -1,0 +1,9 @@
+extends: trace_qwen3_0p6b_pilot_lora_nf_fixed.yaml
+
+run:
+  name: trace_qwen3_0p6b_pilot_lora_nf_e20_r10
+
+adapter:
+  filter:
+    energy_fraction: 0.20
+    leakage: 0.10
