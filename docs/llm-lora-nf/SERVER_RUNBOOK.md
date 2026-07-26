@@ -278,6 +278,18 @@ prompt 可超过 48k token 就擅自提高所有方法的上下文预算。
 `paper_5k` 必须先增加已审阅的 24 文件精确来源 manifest；在此之前
 runner 会主动拒绝 `gpu_formal`。
 
+提交 `74a34e9` 的预注册状态消融已选择 `reference_fixed`；后续主比较
+使用 `trace_qwen3_0p6b_pilot_lora_nf_fixed.yaml`，不得改用 history。
+选择证据位于外部数据根：
+
+```text
+trace_pilot/state_ablation/74a34e9-qwen3-0p6b-seed42/state_selection.json
+```
+
+其 SHA-256 为
+`903310fbc4ad36cac31c26b75eacf1e8163d6bbef8df8d718c94d37f3cf58abd`。
+该文件只决定状态规则，不具备正式结果资格。
+
 任何 `--max-tasks`、行数、步数、生成长度或 calibration 截断都会把
 GPU 输出硬标为 `gpu_chain_smoke_only`，即使服务器有可用 GPU，也不能
 作为完整 pilot 或正式结果。

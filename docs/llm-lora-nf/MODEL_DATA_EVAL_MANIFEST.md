@@ -416,6 +416,27 @@ Google Drive。不得把分别下载的相似原始数据集拼接后宣称为 T
 - runner 在最终累计 adapter 写入后执行目录完整性和结构重载审计；
 - 非正式 smoke 可在上述审计成功后删除 adapter，正式结果禁止删除。
 
+### 8.5 TRACE 状态更新预注册选择
+
+在干净提交 `74a34e9b28690d9e775f506f158e53db038a0819` 上，使用
+`treelora_500_pilot`、seed 42、官方顺序、每任务完整 500 train、前 20
+test、最多 128 个生成 token 和 64 条 NQ calibration，完成
+`reference_fixed` 与 `reference_plus_history` 的八任务状态消融：
+
+- fixed：final average `0.3159303`、TRACE-BWT `-0.0432352`、
+  forgetting `0.0649116`、wall time `2185.85s`；
+- history：final average `0.2999786`、TRACE-BWT `-0.0515040`、
+  forgetting `0.0802903`、wall time `2692.54s`；
+- history-minus-fixed：average `-0.0159517`、BWT `-0.0082689`、
+  wall ratio `1.2318032`；
+- 预注册门限中平均分和 BWT 均失败，耗时门限通过，最终选择
+  `reference_fixed`。
+
+`state_selection.json` SHA-256 为
+`903310fbc4ad36cac31c26b75eacf1e8163d6bbef8df8d718c94d37f3cf58abd`。
+两份 run 的 adapter 均在完整性/重载审计后删除，整个证据目录约 1.6 MB。
+该消融硬标 `formal_result_eligible=false`，仅确定后续 LoRA-NF 状态规则。
+
 ## 9. 两条评测轨道
 
 ### Track A：公开协议对齐
