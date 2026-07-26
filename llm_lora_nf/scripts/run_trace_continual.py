@@ -77,6 +77,7 @@ from llm_lora_nf.trace_protocol import (
     TRACE_OFFICIAL_ORDER,
     assert_task_order,
     audit_trace_dataset,
+    classify_trace_execution,
 )
 from llm_lora_nf.track_a import OfficialLoRANullAttentionCalibrator
 from llm_lora_nf.training import set_reproducible_seed, train_epochs
@@ -285,6 +286,18 @@ def _run(args: argparse.Namespace) -> None:
     requested_mode = str(config["run"]["execution_mode"])
     if requested_mode not in {"gpu_pilot", "gpu_formal"}:
         raise ValueError("TRACE config execution_mode must be gpu_pilot/gpu_formal")
+    has_smoke_overrides = any(
+        value is not None
+        for value in (
+            args.max_tasks,
+            args.train_first_n,
+            args.test_first_n,
+            args.max_steps,
+            args.max_new_tokens,
+            args.calibration_samples,
+            True if args.delete_checkpoint_after_smoke else None,
+        )
+    )
 
     data_protocol = str(config["trace"]["data_protocol"])
     data_audit = audit_trace_dataset(
@@ -299,24 +312,18 @@ def _run(args: argparse.Namespace) -> None:
                 "TRACE paper_5k lacks an approved exact-source manifest; "
                 "formal training is blocked"
             )
-        if any(
-            value is not None
-            for value in (
-                args.max_tasks,
-                args.train_first_n,
-                args.test_first_n,
-                args.max_steps,
-                args.max_new_tokens,
-                args.calibration_samples,
-                True if args.delete_checkpoint_after_smoke else None,
-            )
-        ):
+        if has_smoke_overrides:
             raise ValueError("Formal TRACE training forbids smoke overrides")
 
     admission = inspect_admission(requested=1)
+    execution_mode = classify_trace_execution(
+        requested_mode=requested_mode,
+        gpu_admitted=admission.mode == "gpu",
+        cpu_smoke_fallback=args.cpu_smoke_fallback,
+        has_smoke_overrides=has_smoke_overrides,
+    )
     if admission.mode == "gpu":
         selected_gpu = admission.selected_gpu_indices[0]
-        execution_mode = requested_mode
         device = torch.device(
             admitted_torch_device(
                 selected_gpu,
@@ -324,14 +331,8 @@ def _run(args: argparse.Namespace) -> None:
             )
         )
         torch.cuda.set_device(device)
-    elif args.cpu_smoke_fallback:
-        execution_mode = "cpu_smoke_only"
-        device = torch.device("cpu")
     else:
-        raise RuntimeError(
-            "No admissible GPU while preserving one idle GPU; "
-            "use --cpu-smoke-fallback only for chain validation"
-        )
+        device = torch.device("cpu")
 
     max_tasks = len(order)
     if execution_mode == "cpu_smoke_only":

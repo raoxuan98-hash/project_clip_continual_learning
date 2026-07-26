@@ -416,6 +416,29 @@ def aggregate_trace_matrix(
     }
 
 
+def classify_trace_execution(
+    *,
+    requested_mode: str,
+    gpu_admitted: bool,
+    cpu_smoke_fallback: bool,
+    has_smoke_overrides: bool,
+) -> str:
+    if requested_mode not in {"gpu_pilot", "gpu_formal"}:
+        raise ValueError("TRACE requested mode must be gpu_pilot/gpu_formal")
+    if requested_mode == "gpu_formal" and has_smoke_overrides:
+        raise ValueError("Formal TRACE training forbids smoke overrides")
+    if gpu_admitted:
+        if has_smoke_overrides:
+            return "gpu_chain_smoke_only"
+        return requested_mode
+    if cpu_smoke_fallback:
+        return "cpu_smoke_only"
+    raise RuntimeError(
+        "No admissible GPU while preserving one idle GPU; "
+        "use --cpu-smoke-fallback only for chain validation"
+    )
+
+
 def assert_task_order(order: Iterable[str]) -> str:
     normalized = tuple(order)
     if normalized == TRACE_OFFICIAL_ORDER:

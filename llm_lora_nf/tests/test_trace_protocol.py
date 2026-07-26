@@ -9,6 +9,7 @@ from llm_lora_nf.trace_protocol import (
     aggregate_trace_matrix,
     assert_task_order,
     audit_trace_dataset,
+    classify_trace_execution,
     normalize_trace_primary_score,
 )
 
@@ -117,6 +118,34 @@ def test_single_task_trace_smoke_has_zero_backward_metrics():
     assert result["final_bwt_trace_definition"] == 0.0
     assert result["final_forgetting_standard"] == 0.0
     assert result["forgetting_by_task"] == []
+
+
+def test_trace_execution_labels_gpu_smoke_overrides_as_non_result():
+    assert classify_trace_execution(
+        requested_mode="gpu_pilot",
+        gpu_admitted=True,
+        cpu_smoke_fallback=True,
+        has_smoke_overrides=True,
+    ) == "gpu_chain_smoke_only"
+    assert classify_trace_execution(
+        requested_mode="gpu_pilot",
+        gpu_admitted=True,
+        cpu_smoke_fallback=False,
+        has_smoke_overrides=False,
+    ) == "gpu_pilot"
+    assert classify_trace_execution(
+        requested_mode="gpu_pilot",
+        gpu_admitted=False,
+        cpu_smoke_fallback=True,
+        has_smoke_overrides=False,
+    ) == "cpu_smoke_only"
+    with pytest.raises(ValueError, match="forbids smoke overrides"):
+        classify_trace_execution(
+            requested_mode="gpu_formal",
+            gpu_admitted=True,
+            cpu_smoke_fallback=False,
+            has_smoke_overrides=True,
+        )
 
 
 def test_trace_matrix_rejects_non_triangular_or_out_of_range_values():
