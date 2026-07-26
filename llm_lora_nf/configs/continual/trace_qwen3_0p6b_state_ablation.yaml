@@ -1,0 +1,30 @@
+format_version: 1
+name: trace_qwen3_0p6b_state_ablation
+seed: 42
+order: official
+
+jobs:
+  reference_fixed:
+    config: trace_qwen3_0p6b_pilot_lora_nf_fixed.yaml
+  reference_plus_history:
+    config: trace_qwen3_0p6b_pilot_lora_nf_history.yaml
+
+pilot_overrides:
+  train_first_n: null
+  test_first_n: 20
+  max_steps: null
+  max_new_tokens: 128
+  calibration_samples: 64
+  delete_checkpoint_after_smoke: true
+
+selection:
+  minimum_final_average_gain: 0.005
+  maximum_final_bwt_regression: 0.005
+  maximum_wall_time_ratio: 1.25
+  default_on_failed_gate: reference_fixed
+
+qualification:
+  data_protocol: treelora_500_pilot
+  execution_mode: gpu_chain_smoke_only
+  formal_result_eligible: false
+  purpose: preregister_lora_nf_continual_state_before_full_pilot

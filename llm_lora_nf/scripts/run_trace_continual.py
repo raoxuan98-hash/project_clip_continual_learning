@@ -28,6 +28,7 @@ from llm_lora_nf.config_io import (
     adapter_config_from_mapping,
     canonical_comparison_config_hash,
     canonical_config_hash,
+    canonical_trace_state_ablation_config_hash,
     load_yaml_config,
 )
 from llm_lora_nf.continual_adapter import (
@@ -399,6 +400,9 @@ def _run(args: argparse.Namespace) -> None:
     protocol_config["run"].pop("name", None)
     protocol_config_hash = canonical_config_hash(protocol_config)
     comparison_config_hash = canonical_comparison_config_hash(config)
+    state_ablation_config_hash = (
+        canonical_trace_state_ablation_config_hash(config)
+    )
     data_identity = {
         "protocol": data_audit["protocol"],
         "qualification": data_audit["qualification"],
@@ -476,6 +480,7 @@ def _run(args: argparse.Namespace) -> None:
         "config_hash": config_hash,
         "protocol_config_hash": protocol_config_hash,
         "comparison_config_hash": comparison_config_hash,
+        "state_ablation_config_hash": state_ablation_config_hash,
         "data_identity": data_identity,
         "execution_mode": execution_mode,
         "order": args.order,
@@ -773,11 +778,27 @@ def _run(args: argparse.Namespace) -> None:
         json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    output_integrity = write_directory_integrity(
+        str(output_dir),
+        kind="trace_run",
+    )
     del model
     gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()
-    print(json.dumps({"report": str(report_path), **report["summary"]}, indent=2))
+    print(
+        json.dumps(
+            {
+                "report": str(report_path),
+                "output_integrity_manifest_sha256": output_integrity[
+                    "manifest_sha256"
+                ],
+                "output_integrity_tree_sha256": output_integrity["tree_sha256"],
+                **report["summary"],
+            },
+            indent=2,
+        )
+    )
 
 
 def parse_args() -> argparse.Namespace:

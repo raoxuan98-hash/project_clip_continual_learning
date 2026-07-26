@@ -65,6 +65,22 @@ def canonical_comparison_config_hash(config: Mapping[str, Any]) -> str:
     return canonical_config_hash(normalized)
 
 
+def canonical_trace_state_ablation_config_hash(
+    config: Mapping[str, Any],
+) -> str:
+    """Hash a TRACE LoRA-NF protocol excluding only state identity."""
+
+    normalized = copy.deepcopy(dict(config))
+    run = normalized.get("run")
+    if isinstance(run, dict):
+        run.pop("seed", None)
+        run.pop("name", None)
+    trace = normalized.get("trace")
+    if isinstance(trace, dict):
+        trace.pop("state_update", None)
+    return canonical_config_hash(normalized)
+
+
 def adapter_config_from_mapping(payload: Mapping[str, Any]) -> AdapterConfig:
     filter_payload = dict(payload.get("filter", {}))
     adapter_payload = {

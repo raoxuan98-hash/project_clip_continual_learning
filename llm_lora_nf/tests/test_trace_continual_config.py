@@ -3,6 +3,7 @@ from pathlib import Path
 from llm_lora_nf.artifact_retention import validate_artifact_retention
 from llm_lora_nf.config_io import (
     canonical_comparison_config_hash,
+    canonical_trace_state_ablation_config_hash,
     load_yaml_config,
 )
 from llm_lora_nf.trace_protocol import TRACE_OFFICIAL_ORDER
@@ -59,6 +60,9 @@ def test_trace_config_locks_attention_instruct_and_low_storage_policy():
 def test_trace_history_ablation_changes_only_declared_state_rule():
     fixed = _load("trace_qwen3_0p6b_pilot_lora_nf_fixed.yaml")
     history = _load("trace_qwen3_0p6b_pilot_lora_nf_history.yaml")
+    assert canonical_trace_state_ablation_config_hash(
+        fixed
+    ) == canonical_trace_state_ablation_config_hash(history)
     fixed["run"].pop("name")
     history["run"].pop("name")
     fixed["trace"].pop("state_update")
