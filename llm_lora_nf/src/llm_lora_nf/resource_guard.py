@@ -61,13 +61,13 @@ def query_gpu_status() -> List[GPUStatus]:
 def decide_admission(
     statuses: Iterable[GPUStatus],
     *,
-    requested: int = 2,
+    requested: int = 3,
     reserve_idle: int = 1,
     max_memory_used_mb: int = 512,
     max_utilization_percent: int = 5,
 ) -> AdmissionDecision:
-    if requested < 0 or requested > 2:
-        raise ValueError("requested must be between 0 and 2")
+    if requested < 0 or requested > 3:
+        raise ValueError("requested must be between 0 and 3")
     if reserve_idle < 1:
         raise ValueError("At least one GPU must be reserved")
     idle = [
@@ -87,7 +87,7 @@ def decide_admission(
                 "no GPUs requested; CPU smoke reserves every currently idle GPU"
             ),
         )
-    allowed = max(0, min(requested, 2, len(idle) - reserve_idle))
+    allowed = max(0, min(requested, 3, len(idle) - reserve_idle))
     selected = idle[:allowed]
     if selected:
         return AdmissionDecision(
@@ -104,7 +104,7 @@ def decide_admission(
     )
 
 
-def inspect_admission(requested: int = 2) -> AdmissionDecision:
+def inspect_admission(requested: int = 3) -> AdmissionDecision:
     try:
         statuses = query_gpu_status()
     except (FileNotFoundError, RuntimeError) as error:

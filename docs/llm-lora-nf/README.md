@@ -5,6 +5,10 @@
 LLM 开发必须与当前 CLIP 代码隔离。目标已经用户批准；后续实现和服务器
 实验仍须遵守 `GOAL.md` 的资源、镜像、证据和低存储约束。
 
+2026-07-27 用户将全局 GPU 上限由 2 张调整为 3 张；每次准入至少留出
+1 张真正空闲 GPU、无可用 GPU 时仅远程 CPU 跑链路的规则不变。当前
+单个 TRACE runner 仍只请求 1 张卡，提高上限不会自动扩大单 run 占用。
+
 ## 当前状态
 
 **状态：已批准；隔离实现与论文级门控已完成，本批远程测试通过。**
@@ -40,7 +44,8 @@ TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
 最后写一个累计 adapter。LoRA-NF、LoRA-Null 与 DoRA 的多任务重放
 等价测试均已通过，未引入八份阶段模型 checkpoint。TRACE 的数据读取、
 Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务×时间聚合和
-连续训练 runner 也已接通；当前服务器完整回归为 `133 passed`。正式
+连续训练 runner、状态消融编排和 token 长度审计也已接通；当前服务器
+完整回归为 `137 passed`。正式
 5k/2k 数据尚未取得精确来源 manifest，因此 runner 会硬阻止正式结果，
 只允许已核验 TRACE-500 做状态消融和链路 pilot。
 
@@ -69,6 +74,8 @@ GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性�
 - [`records/2026-07-26-04-server-gpu-environment-and-clean-smoke.md`](records/2026-07-26-04-server-gpu-environment-and-clean-smoke.md)：可用 GPU 环境定位、完整测试、干净提交 CPU 闭环与 checkpoint 回收。
 - [`records/2026-07-26-07-trace-data-and-cumulative-adapter.md`](records/2026-07-26-07-trace-data-and-cumulative-adapter.md)：TRACE 数据资格审计、指标定义与单最终累计 adapter 设计。
 - [`records/2026-07-26-08-trace-runner-and-metrics.md`](records/2026-07-26-08-trace-runner-and-metrics.md)：TRACE Instruct 数据、确定性评测、连续 runner、低存储烟雾测试和完整回归。
+- [`records/2026-07-27-01-gpu-limit-three.md`](records/2026-07-27-01-gpu-limit-three.md)：GPU 总上限由两张调整为三张，至少留一张与 CPU fallback 规则不变。
+- [`records/2026-07-27-02-trace-length-audit.md`](records/2026-07-27-02-trace-length-audit.md)：状态 pilot 暴露 FOMC 回答完全截断，加入全数据 chat-template token 长度审计。
 
 ## 文档边界
 

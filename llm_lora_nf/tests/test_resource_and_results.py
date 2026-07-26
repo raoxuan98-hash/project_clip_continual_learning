@@ -12,20 +12,26 @@ from llm_lora_nf.result_metadata import (
 )
 
 
-def test_gpu_admission_uses_at_most_two_and_reserves_one():
+def test_gpu_admission_uses_at_most_three_and_reserves_one():
     statuses = parse_nvidia_smi_csv(
         "\n".join(
             [
                 "0, 81920, 10, 0",
                 "1, 81920, 10, 0",
                 "2, 81920, 10, 0",
-                "3, 81920, 50000, 90",
+                "3, 81920, 10, 0",
+                "4, 81920, 50000, 90",
             ]
         )
     )
-    decision = decide_admission(statuses, requested=2)
+    decision = decide_admission(statuses, requested=3)
     assert decision.mode == "gpu"
-    assert decision.selected_gpu_indices == [0, 1]
+    assert decision.selected_gpu_indices == [0, 1, 2]
+
+
+def test_gpu_admission_rejects_more_than_three():
+    with pytest.raises(ValueError, match="between 0 and 3"):
+        decide_admission([], requested=4)
 
 
 def test_cpu_smoke_requests_no_gpu_and_reserves_all_idle_devices():

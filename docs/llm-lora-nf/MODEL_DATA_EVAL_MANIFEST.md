@@ -439,7 +439,7 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
 
 ## 11. 资源与结果资格
 
-- 本开发线最多使用 2 张 GPU；
+- 本开发线最多使用 3 张 GPU；
 - 每次准入主动留下至少 1 张 GPU；
 - 无符合条件 GPU 时只运行远程 CPU smoke；
 - CPU 输出标记 `cpu_smoke_only`；
@@ -532,6 +532,21 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
 - 约 11.7 MB 的可重建 CPU smoke adapter 已在验证后精确删除，目录只
   保留约 16 KB 报告；
 - 报告硬标记 `formal_result_eligible=false`，不进入论文表格。
+
+2026-07-26 在干净提交
+`2cdd550075eda333a98b6f5292c50cdcac173a41` 上完成 TRACE GPU
+chain-smoke：
+
+- 数据固定为 `treelora_500_pilot`，仅截取首任务 2 train / 1 test，
+  输出标记 `gpu_chain_smoke_only`；
+- 使用 GPU 0，资源门禁同时记录 GPU 5 保持空闲；
+- Qwen3-0.6B 完整 q/k/v/o LoRA-NF 可训练参数 `2,293,760`；
+- 完成 NQ Instruct 二阶矩校准、一步训练、greedy 生成、TRACE 指标、
+  累计 adapter 完整性和结构重载；
+- 峰值显存 `1,838,169,600` bytes，adapter 审计后自动删除；
+- canonical 报告 SHA-256：
+  `63774d290062fbdd8064d464d100268da54dcbed74b9bd151156c984e525de7f`；
+- `formal_result_eligible=false`，单样本 0 分仅验证链路，不作为性能证据。
 
 另已完成：
 
