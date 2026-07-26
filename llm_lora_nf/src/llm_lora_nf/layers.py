@@ -175,16 +175,30 @@ class FilteredLoRALinear(nn.Module):
         return base + (self.scaling * adapter).to(dtype=base.dtype)
 
     def delta_weight(self) -> torch.Tensor:
-        delta = self.lora_B.weight @ self.lora_A.weight
+        delta = self.lora_B.weight @ self.effective_lora_A()
+        return self.scaling * delta
+
+    def effective_lora_A(self) -> torch.Tensor:
+        """Return the factorized right-hand update after the runtime filter.
+
+        ``B @ effective_lora_A()`` is exactly the unscaled dense update used
+        by :meth:`delta_weight`.  Keeping this factorized representation lets
+        continual runs replay every merged task from the original checkpoint
+        without storing dense deltas or every historical filter basis.
+        """
+
+        effective = self.lora_A.weight
         if self.use_filter and not self.filter.is_identity:
             basis = self.filter.protected_basis.to(
-                device=delta.device, dtype=delta.dtype
+                device=effective.device, dtype=effective.dtype
             )
             coefficient = 1.0 - self.filter.leakage.to(
-                device=delta.device, dtype=delta.dtype
+                device=effective.device, dtype=effective.dtype
             )
-            delta = delta - coefficient * ((delta @ basis) @ basis.transpose(0, 1))
-        return self.scaling * delta
+            effective = effective - coefficient * (
+                (effective @ basis) @ basis.transpose(0, 1)
+            )
+        return effective
 
     @torch.no_grad()
     def merge(self) -> None:

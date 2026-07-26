@@ -331,6 +331,65 @@ SHA-256: 970ce043160f5d13fd9385c9286d0dda7e62a6cb9362bcc71e9897366250c307
 - seeds：`42/43/44`；
 - 指标：任务×时间矩阵、final average、forgetting、BWT、通用能力、指令遵循和安全性变化。
 
+### 8.1 TRACE evaluator 与顺序锁
+
+- 官方仓库：`BeyonderXX/TRACE`；
+- evaluator/code commit：
+  `462e39f616134f4f819efeb3baea8638c03c7db4`；
+- 官方顺序：
+  `C-STANCE → FOMC → MeetingBank → Py150 → ScienceQA → NumGLUE-cm → NumGLUE-ds → 20Minuten`；
+- 预注册替代顺序：
+  `NumGLUE-cm → NumGLUE-ds → FOMC → 20Minuten → C-STANCE → Py150 → MeetingBank → ScienceQA`；
+- LoRA 训练 epochs 按任务依次为 `5/3/7/5/3/5/5/7`；
+- 主任务指标依次为 accuracy、accuracy、ROUGE-L、edit/fuzzy
+  similarity、accuracy、accuracy、accuracy、SARI；
+- Py150 的官方 similarity 为 `0--100`，进入 OP/BWT 前除以 100；
+  SARI 同样归一化到 `0--1`。
+
+TRACE 原文的 \(BWT_t\) 分母为当前已见任务数 \(t\)，而不是旧任务数
+\(t-1\)。实现保留该定义，同时额外报告标准 final forgetting：
+对每个旧任务计算“学习后至最终的历史最大分数减最终分数”，再在
+\(T-1\) 个旧任务上平均。两者不得混称。
+
+### 8.2 数据资格与当前可用 pilot
+
+官方处理数据的 Google Drive 文件 ID 为
+`1S0SmU0WEw5okW_XvP2Ns0URflNzZq6sV`，但服务器与本地当前均无法连接
+Google Drive。不得把分别下载的相似原始数据集拼接后宣称为 TRACE。
+
+当前已核验的链路/状态消融数据为 TreeLoRA 官方仓库提交的
+`LLM-CL-Benchmark_500.tar.xz`：
+
+- repository：`https://github.com/ZinYY/TreeLoRA`；
+- commit：`1c7260c42b34e1961283797c742f08b9c3842501`；
+- Git blob：`3b1dde98a9658fcf27162d30a4495cbbdcaebf0a`；
+- archive SHA-256：
+  `956caf12b59add0c7d961cf8ecbad0307e1abca8db7de8873c37d92dd709e9c2`；
+- 八个任务均有 500 条训练样本；通常为 100 条 eval + 100 条 test，
+  `NumGLUE-cm` 为 41 + 81。
+
+因此该归档固定标记为 `treelora_500_pilot`，只允许链路、状态更新消融
+和预算估算，绝不进入正式论文主表。正式 `paper_5k` 必须同时满足：
+
+1. 每任务恰好 5,000 条 train；
+2. 每任务 eval + test 恰好 2,000 条；
+3. 八任务 24 个 JSON 文件都有外部审阅后锁定的精确 SHA-256；
+4. 来源 manifest 能证明为官方 Drive 文件或内容等价镜像；
+5. prompt/answer schema、顺序与 evaluator 输入逐项通过审计。
+
+仅通过行数检查仍标记 `formal_eligible=false`，不能启动正式结果收集。
+
+### 8.3 连续状态与单最终 adapter
+
+- 所有主比较方法采用相同的 task merge/reset 受控协议；
+- native LoRA-NF 将每任务 \(AP_t,B_t\) 作为低秩重放因子；
+- LoRA-Null 同时保存初始化减项，确保从原始 checkpoint 重放的函数相同；
+- DoRA 保存每任务 PEFT state 并按顺序 merge/replay；
+- 任务阶段只在内存保留这些分支，不写中间模型；
+- 序列结束只写一个累计 adapter 目录、一个任务×时间指标/预测证据集；
+- 最终 adapter 保存最后的 LoRA-NF 保护 basis、phase count 和谱摘要，
+  不重复保存八套历史 basis 或稠密 delta。
+
 ## 9. 两条评测轨道
 
 ### Track A：公开协议对齐

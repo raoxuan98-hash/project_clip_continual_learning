@@ -315,16 +315,27 @@ reference calibration 计为第一个阶段，确保预训练/Instruct 能力不
 
 ## 10. 保存、加载与 merge
 
-checkpoint 必须包含：
+连续任务不保存每个阶段的模型 checkpoint。训练时每个任务的有效低秩更新
+先合并到内存中的当前模型，再把其可重放因子追加到内存状态；整个序列结束
+后只写一个累计 adapter 目录。LoRA-NF 将 \(AP_t\) 与 \(B_t\) 保存为该任务
+的有效低秩分支，因此无需保存每个历史 filter basis 或稠密 delta；
+LoRA-Null 额外保存其函数保持初始化的减项，DoRA 保存 PEFT adapter state，
+均可从同一个原始 Instruct checkpoint 按任务顺序精确重放。
+
+最终 checkpoint 必须包含：
 
 - base model ID、revision 和 Instruct 标识；
 - attention-only target module 清单；
-- LoRA \(A/B\)、rank、alpha、dropout；
-- 每层 `qkv` 与 `o` 的 \(U_{\mathrm{prot}}\)；
+- 每任务可重放的有效 LoRA \(A/B\)（或 DoRA state）、rank、alpha、dropout；
+- 最终保护状态中每层 `qkv` 与 `o` 的 \(U_{\mathrm{prot}}\)；
 - \(\epsilon\)、\(\rho\)、特征值摘要和选定维数；
 - second-moment 阶段计数；
-- optimizer/scheduler state（仅恢复训练需要）；
 - manifest hash 和代码 commit。
+
+禁止写入中间 step/epoch checkpoint、optimizer state 和 scheduler state。
+任务×时间评测在每个任务合并后直接以内存模型完成，只保存预测、指标矩阵
+和证据 manifest。累计 adapter 是一个最终 artifact，不是八个伪装成子目录
+的模型 checkpoint。
 
 merge 后必须满足 eval 模式下：
 

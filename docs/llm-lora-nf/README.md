@@ -15,8 +15,6 @@ content-addressed calibration cache；正式流水线另已加入“单最终 ad
 单临时 merged checkpoint”低存储保留策略。2026-07-26 已在隔离 GPU
 环境完成代码任务低存储编排后的 `105 passed`，并验证 RTX 4090 CUDA
 前后向。
-当前 6 张 GPU 均有
-约 16--17 GB 显存占用，因此正式实验等待资源准入，不是 CUDA 故障。
 干净提交 `d817858` 的 Qwen3-0.6B 完整 LoRA-NF CPU smoke 也已通过；
 可重建 adapter 验证后已删除，只保留约 16 KB 的非正式报告。
 
@@ -33,6 +31,14 @@ Bubblewrap 分离执行链。数据与 evaluator 均位于服务器外部缓存�
 Git；基础链对应实现提交为
 `006805ed39193d12406d242874f44e75c45b278c`，其后又补齐了串行低存储
 launcher、训练 seed/adapter 哈希身份链和三 seed 配对统计。
+
+TRACE 开发现已锁定官方 evaluator commit、两种任务顺序、epochs、
+OP/BWT/forgetting 定义和正式数据资格门禁。TreeLoRA 固定 commit 的
+TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
+校验，但明确只作为 pilot；它不会被冒充为每任务 5k/2k 的论文协议。
+连续方法采用 task merge/reset：每个阶段只在内存追加可重放低秩分支，
+最后写一个累计 adapter。LoRA-NF、LoRA-Null 与 DoRA 的多任务重放
+等价测试均已通过，未引入八份阶段模型 checkpoint。
 
 ## 文件索引
 
@@ -51,6 +57,7 @@ launcher、训练 seed/adapter 哈希身份链和三 seed 配对统计。
 - [`records/2026-07-26-02-checkpoint-retention-policy.md`](records/2026-07-26-02-checkpoint-retention-policy.md)：checkpoint 数量和低存储保留硬约束。
 - [`records/2026-07-26-03-storage-baseline-and-provenance-audit.md`](records/2026-07-26-03-storage-baseline-and-provenance-audit.md)：PEFT LoRA 基线、缓存/临时文件回收、滤波统计安全和派生证据来源审计。
 - [`records/2026-07-26-04-server-gpu-environment-and-clean-smoke.md`](records/2026-07-26-04-server-gpu-environment-and-clean-smoke.md)：可用 GPU 环境定位、完整测试、干净提交 CPU 闭环与 checkpoint 回收。
+- [`records/2026-07-26-07-trace-data-and-cumulative-adapter.md`](records/2026-07-26-07-trace-data-and-cumulative-adapter.md)：TRACE 数据资格审计、指标定义与单最终累计 adapter 设计。
 
 ## 文档边界
 
