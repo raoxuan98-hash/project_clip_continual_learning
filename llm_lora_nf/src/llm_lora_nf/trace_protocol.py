@@ -405,6 +405,8 @@ def aggregate_trace_matrix(
         "final_bwt_trace_definition": bwt_by_time[-1],
         "final_forgetting_standard": (
             sum(forgetting_by_task) / len(forgetting_by_task)
+            if forgetting_by_task
+            else 0.0
         ),
         "forgetting_by_task": forgetting_by_task,
         "bwt_denominator": "tasks_seen_including_current",

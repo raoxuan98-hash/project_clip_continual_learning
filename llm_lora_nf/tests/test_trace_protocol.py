@@ -111,6 +111,14 @@ def test_trace_matrix_metrics_preserve_paper_bwt_denominator():
     assert result["final_forgetting_standard"] == pytest.approx(0.15)
 
 
+def test_single_task_trace_smoke_has_zero_backward_metrics():
+    result = aggregate_trace_matrix([[0.75]])
+    assert result["final_average"] == pytest.approx(0.75)
+    assert result["final_bwt_trace_definition"] == 0.0
+    assert result["final_forgetting_standard"] == 0.0
+    assert result["forgetting_by_task"] == []
+
+
 def test_trace_matrix_rejects_non_triangular_or_out_of_range_values():
     with pytest.raises(ValueError, match="row 1"):
         aggregate_trace_matrix([[0.5], [0.4]])
