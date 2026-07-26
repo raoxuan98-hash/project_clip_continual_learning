@@ -40,9 +40,15 @@ TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
 最后写一个累计 adapter。LoRA-NF、LoRA-Null 与 DoRA 的多任务重放
 等价测试均已通过，未引入八份阶段模型 checkpoint。TRACE 的数据读取、
 Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务×时间聚合和
-连续训练 runner 也已接通；当前服务器完整回归为 `129 passed`。正式
+连续训练 runner 也已接通；当前服务器完整回归为 `133 passed`。正式
 5k/2k 数据尚未取得精确来源 manifest，因此 runner 会硬阻止正式结果，
 只允许已核验 TRACE-500 做状态消融和链路 pilot。
+
+干净提交 `2cdd550` 的 Qwen3-0.6B TRACE 最小 GPU 闭环已通过：只使用
+GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性生成、
+指标聚合及累计 adapter 完整性/结构重载。输出硬标
+`gpu_chain_smoke_only`，adapter 审计后已删除，只保留约 26 KB 报告、
+预测和指标证据。
 
 ## 文件索引
 
