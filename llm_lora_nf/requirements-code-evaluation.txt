@@ -1,0 +1,16 @@
+# EvalPlus source itself is checked out at the exact commit recorded in
+# configs/evaluation/track_b_code_evalplus.yaml and installed with:
+#   pip install --no-deps -e /external/path/to/evalplus
+# Torch/Transformers/Datasets are inherited from requirements-server.txt.
+tempdir==0.7.1
+wget==3.2
+multipledispatch==1.0.0
+appdirs==1.4.4
+tqdm==4.67.1
+termcolor==2.5.0
+fire==0.7.1
+rich==14.2.0
+tree_sitter==0.25.2
+tree-sitter-python==0.25.0
+psutil==7.1.3
+stop-sequencer==1.2.3

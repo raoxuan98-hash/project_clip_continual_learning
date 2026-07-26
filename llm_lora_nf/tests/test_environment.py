@@ -3,9 +3,11 @@ from pathlib import Path
 import pytest
 
 from llm_lora_nf.environment import (
+    LOCKED_CODE_EVALUATION_PACKAGE_VERSIONS,
     LOCKED_PACKAGE_VERSIONS,
     execution_environment_identity,
     software_environment_identity,
+    validate_code_evaluation_package_versions,
     validate_locked_package_versions,
 )
 from llm_lora_nf.provenance import validate_derivation_source
@@ -22,6 +24,16 @@ def test_locked_environment_rejects_peft_drift():
         validate_locked_package_versions(changed)
 
 
+def test_locked_code_evaluation_versions_reject_drift():
+    validate_code_evaluation_package_versions(
+        LOCKED_CODE_EVALUATION_PACKAGE_VERSIONS
+    )
+    changed = dict(LOCKED_CODE_EVALUATION_PACKAGE_VERSIONS)
+    changed["evalplus"] = "future"
+    with pytest.raises(RuntimeError, match="evalplus=future"):
+        validate_code_evaluation_package_versions(changed)
+
+
 def test_locked_versions_match_server_requirements_file():
     requirements = (
         Path(__file__).resolve().parents[1] / "requirements-server.txt"
@@ -33,6 +45,25 @@ def test_locked_versions_match_server_requirements_file():
         for name, version in [line.split("==", 1)]
     }
     for package, version in LOCKED_PACKAGE_VERSIONS.items():
+        assert pins[package] == version
+
+
+def test_code_evaluation_versions_match_requirements_file():
+    requirements = (
+        Path(__file__).resolve().parents[1]
+        / "requirements-code-evaluation.txt"
+    ).read_text(encoding="utf-8")
+    pins = {
+        name.replace("_", "-"): version
+        for line in requirements.splitlines()
+        if line and not line.startswith("#") and "==" in line
+        for name, version in [line.split("==", 1)]
+    }
+    for package, version in (
+        LOCKED_CODE_EVALUATION_PACKAGE_VERSIONS.items()
+    ):
+        if package == "evalplus":
+            continue
         assert pins[package] == version
 
 

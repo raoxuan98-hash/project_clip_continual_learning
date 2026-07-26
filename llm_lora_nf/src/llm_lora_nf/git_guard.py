@@ -21,6 +21,7 @@ ALLOWED_PATHS = frozenset(
         "docs/llm-lora-nf/SERVER_RUNBOOK.md",
         "llm_lora_nf/README.md",
         "llm_lora_nf/pyproject.toml",
+        "llm_lora_nf/requirements-code-evaluation.txt",
         "llm_lora_nf/requirements-evaluation.txt",
         "llm_lora_nf/requirements-server.txt",
     }

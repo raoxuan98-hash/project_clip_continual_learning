@@ -1,0 +1,24 @@
+extends: math_base.yaml
+
+model:
+  id: meta-llama/Llama-3.2-3B-Instruct
+  source_id: LLM-Research/Llama-3.2-3B-Instruct
+
+train:
+  dataset: pissa_codefeedback_python
+  repository: fxmeng/pissa-dataset
+  revision: d4746ceca8314940af8a61333bc2d395d9e259c9
+  file: python/train.json
+  file_size_bytes: 244222081
+  file_sha256: 2fc75475ecb65aa9fa7a0f7135e4c0b8c59cfd52ef27a9ea0040ef143b891a82
+  empty_output_indices: [25233]
+  source_dataset: m-a-p/CodeFeedback-Filtered-Instruction
+  source_revision: a08c213a9748c66c15d0225814be80a2e77adf4a
+  first_n: 104848
+  optimizer_steps_per_epoch: 819
+  consumed_examples_per_epoch: 104832
+  discarded_examples_per_epoch: 16
+
+evaluation:
+  downstream: [humaneval, humaneval_plus, mbpp, mbpp_plus]
+  retention: [triviaqa, nq_open, webqs]

@@ -1,0 +1,8 @@
+extends: code_base.yaml
+
+run:
+  name: code_corda_kpm
+
+adapter:
+  method: corda
+  corda_mode: kpm

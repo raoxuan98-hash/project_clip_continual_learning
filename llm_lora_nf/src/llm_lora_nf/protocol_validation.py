@@ -1,6 +1,19 @@
 from typing import Any, Mapping, Sequence
 
-from .dataset_io import METAMATH_REVISION, NQ_OPEN_REVISION
+from .dataset_io import (
+    CODEFEEDBACK_SOURCE_ID,
+    CODEFEEDBACK_SOURCE_REVISION,
+    METAMATH_REVISION,
+    NQ_OPEN_REVISION,
+    PISSA_CODEFEEDBACK_PYTHON_FILE,
+    PISSA_CODEFEEDBACK_PYTHON_EMPTY_OUTPUT_INDICES,
+    PISSA_CODEFEEDBACK_PYTHON_ROWS,
+    PISSA_CODEFEEDBACK_PYTHON_SHA256,
+    PISSA_CODEFEEDBACK_PYTHON_SIZE_BYTES,
+    PISSA_DATASET_ID,
+    PISSA_DATASET_REVISION,
+)
+from .evalplus_evidence import EVALPLUS_DATASETS
 
 
 def _nested(config: Mapping[str, Any], path: str) -> Any:
@@ -34,7 +47,7 @@ def _expect_float(
         )
 
 
-def _validate_common_math_training(
+def _validate_common_sft_training(
     config: Mapping[str, Any],
     *,
     target_modules: Sequence[str],
@@ -79,9 +92,6 @@ def _validate_common_math_training(
     _expect(config, "calibration.revision", NQ_OPEN_REVISION)
     _expect(config, "calibration.samples", 256)
     _expect(config, "calibration.seed", 233)
-    _expect(config, "train.dataset", "metamathqa")
-    _expect(config, "train.revision", METAMATH_REVISION)
-    _expect(config, "train.first_n", 100000)
     _expect(config, "train.max_sequence_length", 512)
     _expect(config, "train.epochs", 1)
     _expect(config, "train.per_device_batch_size", 1)
@@ -104,20 +114,61 @@ def _validate_common_math_training(
         "train.reference_trainer_commit",
         "5d7739f15a6e50de416977fe2cc9cb516d67edda",
     )
-    _expect(config, "train.optimizer_steps_per_epoch", 781)
-    _expect(config, "train.consumed_examples_per_epoch", 99968)
-    _expect(config, "train.discarded_examples_per_epoch", 32)
     _expect(config, "train.accumulation_remainder_policy", "drop")
     seed = int(_nested(config, "run.seed"))
     if seed not in {42, 43, 44}:
         raise ValueError("Locked formal seeds are 42, 43, and 44")
 
 
+def _validate_metamath_training(config: Mapping[str, Any]) -> None:
+    _expect(config, "train.dataset", "metamathqa")
+    _expect(config, "train.revision", METAMATH_REVISION)
+    _expect(config, "train.first_n", 100000)
+    _expect(config, "train.optimizer_steps_per_epoch", 781)
+    _expect(config, "train.consumed_examples_per_epoch", 99968)
+    _expect(config, "train.discarded_examples_per_epoch", 32)
+
+
+def _validate_codefeedback_python_training(config: Mapping[str, Any]) -> None:
+    _expect(config, "train.dataset", "pissa_codefeedback_python")
+    _expect(config, "train.repository", PISSA_DATASET_ID)
+    _expect(config, "train.revision", PISSA_DATASET_REVISION)
+    _expect(config, "train.file", PISSA_CODEFEEDBACK_PYTHON_FILE)
+    _expect(
+        config,
+        "train.file_size_bytes",
+        PISSA_CODEFEEDBACK_PYTHON_SIZE_BYTES,
+    )
+    _expect(config, "train.file_sha256", PISSA_CODEFEEDBACK_PYTHON_SHA256)
+    _expect(
+        config,
+        "train.empty_output_indices",
+        list(PISSA_CODEFEEDBACK_PYTHON_EMPTY_OUTPUT_INDICES),
+    )
+    _expect(config, "train.source_dataset", CODEFEEDBACK_SOURCE_ID)
+    _expect(config, "train.source_revision", CODEFEEDBACK_SOURCE_REVISION)
+    _expect(config, "train.first_n", PISSA_CODEFEEDBACK_PYTHON_ROWS)
+    _expect(config, "train.optimizer_steps_per_epoch", 819)
+    _expect(config, "train.consumed_examples_per_epoch", 104832)
+    _expect(config, "train.discarded_examples_per_epoch", 16)
+
+
+def _validate_track_b_training_dataset(config: Mapping[str, Any]) -> None:
+    dataset = str(_nested(config, "train.dataset"))
+    if dataset == "metamathqa":
+        _validate_metamath_training(config)
+    elif dataset == "pissa_codefeedback_python":
+        _validate_codefeedback_python_training(config)
+    else:
+        raise ValueError(f"Unsupported locked Track B dataset: {dataset}")
+
+
 def validate_track_b_formal_config(config: Mapping[str, Any]) -> None:
-    _validate_common_math_training(
+    _validate_common_sft_training(
         config,
         target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
     )
+    _validate_track_b_training_dataset(config)
     _expect(config, "train.optimizer", "adamw")
     _expect(config, "calibration.batch_size", 8)
     _expect(config, "calibration.max_sequence_length", 1024)
@@ -166,7 +217,7 @@ def validate_track_a_formal_config(config: Mapping[str, Any]) -> None:
         "official_commit",
         "1e6808abb81fe10e50b8172c40ac9a8ab4f11e83",
     )
-    _validate_common_math_training(
+    _validate_common_sft_training(
         config,
         target_modules=(
             "q_proj",
@@ -178,6 +229,7 @@ def validate_track_a_formal_config(config: Mapping[str, Any]) -> None:
             "down_proj",
         ),
     )
+    _validate_metamath_training(config)
     _expect(config, "train.optimizer", "adamw_torch")
     _expect(config, "train.prompt_format", "official_lora_null_alpaca_style")
     _expect(config, "calibration.batch_size", 1)
@@ -272,3 +324,70 @@ def validate_formal_evaluation_config(config: Mapping[str, Any]) -> None:
         },
     }
     _expect(config, "datasets", locked_datasets)
+
+
+def validate_formal_code_evaluation_config(
+    config: Mapping[str, Any],
+) -> None:
+    _expect(config, "run.execution_mode", "gpu_formal")
+    seed = int(_nested(config, "run.seed"))
+    if seed not in {42, 43, 44}:
+        raise ValueError("Locked formal code-evaluation seeds are 42, 43, and 44")
+    _expect(config, "evaluator.repository", "evalplus/evalplus")
+    _expect(config, "evaluator.version", "v0.3.1")
+    _expect(
+        config,
+        "evaluator.revision",
+        "e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2",
+    )
+    _expect(config, "datasets", EVALPLUS_DATASETS)
+    _expect(config, "generation.backend", "hf")
+    _expect(config, "generation.checkpoint_type", "instruct")
+    _expect(config, "generation.apply_chat_template", True)
+    _expect(config, "generation.force_base_prompt", False)
+    _expect(config, "generation.greedy", True)
+    _expect_float(config, "generation.temperature", 0.0)
+    _expect(config, "generation.num_samples", 1)
+    _expect(config, "generation.batch_size", 1)
+    _expect(config, "generation.max_new_tokens", 768)
+    _expect(config, "generation.dtype", "float32")
+    _expect(config, "generation.attn_implementation", "eager")
+    _expect(config, "generation.trust_remote_code", False)
+    _expect(config, "generation.resume", False)
+    _expect(config, "generation.enable_thinking", False)
+    _expect(
+        config,
+        "generation.instruction_prefix",
+        (
+            "Please provide a self-contained Python script that solves the "
+            "following problem in a markdown code block:"
+        ),
+    )
+    _expect(
+        config,
+        "generation.response_prefix",
+        (
+            "Below is a Python script with a self-contained function that "
+            "solves the problem and passes corresponding tests:"
+        ),
+    )
+    _expect(config, "execution.runtime", "bubblewrap")
+    _expect(config, "execution.unshare_all", True)
+    _expect(config, "execution.network", "disabled")
+    _expect(config, "execution.parallel_workers", 8)
+    _expect(config, "execution.base_only", False)
+    _expect(config, "execution.test_details", False)
+    _expect_float(config, "execution.min_time_limit_seconds", 1.0)
+    _expect_float(config, "execution.ground_truth_time_limit_factor", 4.0)
+    _expect(config, "execution.memory_limit_bytes", 4294967296)
+    _expect(config, "metrics.samples_per_task", 1)
+    _expect(
+        config,
+        "metrics.primary",
+        [
+            "humaneval_pass_at_1",
+            "humaneval_plus_pass_at_1",
+            "mbpp_pass_at_1",
+            "mbpp_plus_pass_at_1",
+        ],
+    )

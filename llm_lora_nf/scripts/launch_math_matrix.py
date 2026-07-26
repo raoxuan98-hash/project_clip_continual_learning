@@ -87,7 +87,7 @@ def _completed_formal_run(
 
 def _main_locked() -> None:
     parser = argparse.ArgumentParser(
-        description="Serial, resumable launcher for the locked math SFT matrix"
+        description="Serial, resumable launcher for a locked SFT matrix"
     )
     parser.add_argument("--matrix", required=True)
     parser.add_argument("--stage", required=True)
@@ -155,19 +155,47 @@ def _main_locked() -> None:
                     str((config_root / model_spec["config"]).resolve()),
                     "--model-path",
                     str(Path(model_spec["model_path"]).resolve()),
-                    "--metamath-json",
-                    str(Path(matrix["data"]["metamath_json"]).resolve()),
-                    "--nq-parquet",
-                    str(Path(matrix["data"]["nq_parquet"]).resolve()),
-                    "--output-dir",
-                    str(output_dir),
-                    "--method",
-                    method,
-                    "--seed",
-                    str(seed),
-                    "--run-name",
-                    run_name,
                 ]
+                if runner == "track_a":
+                    command.extend(
+                        [
+                            "--metamath-json",
+                            str(
+                                Path(
+                                    matrix["data"]["metamath_json"]
+                                ).resolve()
+                            ),
+                        ]
+                    )
+                else:
+                    train_json = matrix["data"].get(
+                        "train_json",
+                        matrix["data"].get("metamath_json"),
+                    )
+                    if train_json is None:
+                        raise ValueError(
+                            "Track B matrix data requires train_json"
+                        )
+                    command.extend(
+                        [
+                            "--train-json",
+                            str(Path(train_json).resolve()),
+                        ]
+                    )
+                command.extend(
+                    [
+                        "--nq-parquet",
+                        str(Path(matrix["data"]["nq_parquet"]).resolve()),
+                        "--output-dir",
+                        str(output_dir),
+                        "--method",
+                        method,
+                        "--seed",
+                        str(seed),
+                        "--run-name",
+                        run_name,
+                    ]
+                )
                 if runner == "track_b":
                     cache_root = matrix["data"].get("calibration_cache_root")
                     if cache_root:

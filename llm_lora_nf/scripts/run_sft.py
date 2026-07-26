@@ -40,7 +40,7 @@ from llm_lora_nf.data import (
     ResponseOnlyCollator,
 )
 from llm_lora_nf.dataset_io import (
-    load_metamath_examples,
+    load_training_examples,
     official_lora_null_nq_character_spans,
     sample_nq_questions,
 )
@@ -256,9 +256,20 @@ def _run(args: argparse.Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     data_started = time.monotonic()
-    examples = load_metamath_examples(
-        args.metamath_json,
+    training_data_path = args.train_json or args.metamath_json
+    if training_data_path is None:
+        raise ValueError("A training JSON path is required")
+    training_dataset_name = str(train_config["dataset"])
+    if args.metamath_json is not None and training_dataset_name != "metamathqa":
+        raise ValueError(
+            "--metamath-json is a legacy alias that may only be used with "
+            "train.dataset=metamathqa"
+        )
+    examples = load_training_examples(
+        training_dataset_name,
+        training_data_path,
         first_n=train_first_n,
+        formal=execution_mode == "gpu_formal",
     )
     training_dataset = LazySupervisedChatDataset(
         examples,
@@ -714,7 +725,19 @@ def _run(args: argparse.Namespace) -> None:
         "model_snapshot_integrity": model_integrity_record,
         "environment": environment_record,
         "dataset": {
-            "metamath_rows": train_first_n,
+            "training": {
+                "dataset": training_dataset_name,
+                "repository": train_config.get("repository"),
+                "revision": train_config["revision"],
+                "file": train_config.get("file"),
+                "file_size_bytes": train_config.get("file_size_bytes"),
+                "file_sha256": train_config.get("file_sha256"),
+                "empty_output_indices": train_config.get(
+                    "empty_output_indices",
+                    [],
+                ),
+                "rows": train_first_n,
+            },
             "nq_calibration_rows": (
                 calibration_samples
                 if adapter_config.method in {"lora_nf", "lora_null", "corda"}
@@ -775,7 +798,12 @@ def main() -> None:
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--model-path", required=True)
-    parser.add_argument("--metamath-json", required=True)
+    training_data = parser.add_mutually_exclusive_group(required=True)
+    training_data.add_argument("--train-json")
+    training_data.add_argument(
+        "--metamath-json",
+        help="Legacy MetaMathQA-only alias for --train-json.",
+    )
     parser.add_argument("--nq-parquet", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--cpu-smoke-fallback", action="store_true")

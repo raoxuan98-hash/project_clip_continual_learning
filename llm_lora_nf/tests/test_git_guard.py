@@ -13,6 +13,10 @@ def test_payload_guard_accepts_only_declared_supporting_assets():
             PayloadEntry(".gitignore", 2048),
             PayloadEntry("docs/llm-lora-nf/GOAL.md", 2048),
             PayloadEntry("llm_lora_nf/requirements-server.txt", 2048),
+            PayloadEntry(
+                "llm_lora_nf/requirements-code-evaluation.txt",
+                2048,
+            ),
             PayloadEntry("llm_lora_nf/configs/paper/math_base.yaml", 2048),
         ]
     ) == []

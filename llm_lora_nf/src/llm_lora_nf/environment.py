@@ -16,6 +16,21 @@ LOCKED_PACKAGE_VERSIONS = {
     "peft": "0.17.1",
     "accelerate": "1.10.1",
 }
+LOCKED_CODE_EVALUATION_PACKAGE_VERSIONS = {
+    "evalplus": "0.3.1",
+    "tempdir": "0.7.1",
+    "wget": "3.2",
+    "multipledispatch": "1.0.0",
+    "appdirs": "1.4.4",
+    "tqdm": "4.67.1",
+    "termcolor": "2.5.0",
+    "fire": "0.7.1",
+    "rich": "14.2.0",
+    "tree-sitter": "0.25.2",
+    "tree-sitter-python": "0.25.0",
+    "psutil": "7.1.3",
+    "stop-sequencer": "1.2.3",
+}
 
 
 def package_versions() -> Dict[str, str]:
@@ -41,6 +56,35 @@ def validate_locked_package_versions(
             "Formal environment package mismatch: "
             + ", ".join(
                 f"{package}={values['actual']} (expected {values['expected']})"
+                for package, values in sorted(mismatches.items())
+            )
+        )
+
+
+def code_evaluation_package_versions() -> Dict[str, str]:
+    return {
+        package: importlib.metadata.version(package)
+        for package in LOCKED_CODE_EVALUATION_PACKAGE_VERSIONS
+    }
+
+
+def validate_code_evaluation_package_versions(
+    actual: Mapping[str, str],
+) -> None:
+    mismatches = {
+        package: {
+            "expected": expected,
+            "actual": actual.get(package),
+        }
+        for package, expected in LOCKED_CODE_EVALUATION_PACKAGE_VERSIONS.items()
+        if actual.get(package) != expected
+    }
+    if mismatches:
+        raise RuntimeError(
+            "Formal code-evaluation package mismatch: "
+            + ", ".join(
+                f"{package}={values['actual']} "
+                f"(expected {values['expected']})"
                 for package, values in sorted(mismatches.items())
             )
         )

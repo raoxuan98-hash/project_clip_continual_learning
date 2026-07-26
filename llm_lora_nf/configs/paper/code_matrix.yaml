@@ -1,0 +1,48 @@
+artifact_retention:
+  base_snapshots_per_revision: 1
+  final_adapter_checkpoints_per_run: 1
+  save_intermediate_checkpoints: false
+  save_optimizer_state: false
+  save_scheduler_state: false
+  merged_checkpoint_policy: ephemeral_delete_after_qualified_evaluation
+  max_concurrent_merged_checkpoints: 1
+  request_cache_scope: shared_content_addressed_per_base_model_protocol
+
+stages:
+  protocol_gate:
+    runner: track_b
+    models:
+      - llama3p2_3b
+    methods:
+      - lora
+      - lora_null
+      - lora_nf
+    seeds: [42]
+
+  main:
+    runner: track_b
+    models:
+      - llama3p2_3b
+      - qwen25_1p5b
+    methods:
+      - lora
+      - dora
+      - lora_null
+      - pissa
+      - milora
+      - corda
+      - lora_nf
+    seeds: [42, 43, 44]
+
+models:
+  llama3p2_3b:
+    config: code_base.yaml
+    model_path: /home/raoxuan/projects/data/llm_lora_nf/model_cache/LLM-Research/Llama-3___2-3B-Instruct
+  qwen25_1p5b:
+    config: code_qwen25_1p5b_base.yaml
+    model_path: /home/raoxuan/projects/data/llm_lora_nf/model_cache/Qwen/Qwen2___5-1___5B-Instruct
+
+data:
+  calibration_cache_root: /home/raoxuan/projects/data/llm_lora_nf/calibration_cache
+  train_json: /home/raoxuan/projects/data/llm_lora_nf/hf_mirror_cache/datasets--fxmeng--pissa-dataset/snapshots/d4746ceca8314940af8a61333bc2d395d9e259c9/python/train.json
+  nq_parquet: /home/raoxuan/projects/data/llm_lora_nf/hf_mirror_cache/datasets--google-research-datasets--nq_open/snapshots/5dd9790a83002ad084ddeb7c420dc716852c6f28/nq_open/train-00000-of-00001.parquet

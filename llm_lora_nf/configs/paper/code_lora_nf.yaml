@@ -1,0 +1,7 @@
+extends: code_base.yaml
+
+run:
+  name: code_lora_nf
+
+adapter:
+  method: lora_nf

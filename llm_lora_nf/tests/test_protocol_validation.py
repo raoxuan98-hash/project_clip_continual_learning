@@ -41,6 +41,38 @@ def test_all_track_b_paper_configs_pass_locked_validation():
         validate_track_b_formal_config(config)
 
 
+def test_all_code_track_b_paper_configs_pass_locked_validation():
+    for method in (
+        "lora",
+        "dora",
+        "lora_null",
+        "pissa",
+        "milora",
+        "corda",
+        "lora_nf",
+    ):
+        config = load_yaml_config(
+            str(CONFIG_ROOT / f"code_{method}.yaml")
+        )
+        validate_track_b_formal_config(config)
+
+
+def test_code_track_b_validation_rejects_data_identity_drift():
+    config = load_yaml_config(str(CONFIG_ROOT / "code_lora_nf.yaml"))
+    changed = copy.deepcopy(config)
+    changed["train"]["file_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="train.file_sha256"):
+        validate_track_b_formal_config(changed)
+
+
+def test_code_track_b_validation_rejects_optimizer_step_drift():
+    config = load_yaml_config(str(CONFIG_ROOT / "code_lora_nf.yaml"))
+    changed = copy.deepcopy(config)
+    changed["train"]["optimizer_steps_per_epoch"] = 820
+    with pytest.raises(ValueError, match="optimizer_steps_per_epoch"):
+        validate_track_b_formal_config(changed)
+
+
 def test_track_b_validation_rejects_budget_drift():
     config = load_yaml_config(str(CONFIG_ROOT / "math_lora_nf.yaml"))
     changed = copy.deepcopy(config)
