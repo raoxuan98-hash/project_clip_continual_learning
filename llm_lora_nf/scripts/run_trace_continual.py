@@ -56,7 +56,11 @@ from llm_lora_nf.integrity import (
     write_directory_integrity,
 )
 from llm_lora_nf.model_io import load_instruct_model
-from llm_lora_nf.resource_guard import inspect_admission, project_gpu_lock
+from llm_lora_nf.resource_guard import (
+    admitted_torch_device,
+    inspect_admission,
+    project_gpu_lock,
+)
 from llm_lora_nf.trace_data import (
     generate_trace_predictions,
     load_trace_split,
@@ -312,11 +316,14 @@ def _run(args: argparse.Namespace) -> None:
     admission = inspect_admission(requested=1)
     if admission.mode == "gpu":
         selected_gpu = admission.selected_gpu_indices[0]
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(selected_gpu)
         execution_mode = requested_mode
-        device = torch.device("cuda:0")
+        device = torch.device(
+            admitted_torch_device(
+                selected_gpu,
+                cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
+            )
+        )
     elif args.cpu_smoke_fallback:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
         execution_mode = "cpu_smoke_only"
         device = torch.device("cpu")
     else:

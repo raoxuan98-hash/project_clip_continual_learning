@@ -117,6 +117,43 @@ def inspect_admission(requested: int = 2) -> AdmissionDecision:
     return decide_admission(statuses, requested=requested)
 
 
+def admitted_torch_device(
+    selected_physical_index: int,
+    *,
+    cuda_visible_devices: Optional[str],
+) -> str:
+    """Resolve an admitted physical GPU without mutating CUDA visibility.
+
+    Libraries imported before admission may already have initialized PyTorch
+    CUDA. Changing ``CUDA_VISIBLE_DEVICES`` inside that process can invalidate
+    its cached device map, so callers must resolve the existing map instead.
+    """
+
+    if selected_physical_index < 0:
+        raise ValueError("Selected physical GPU index must be non-negative")
+    if cuda_visible_devices is None:
+        return f"cuda:{selected_physical_index}"
+    visible = cuda_visible_devices.strip()
+    if not visible:
+        raise RuntimeError(
+            "GPU admission selected a device but CUDA_VISIBLE_DEVICES is empty"
+        )
+    tokens = [token.strip() for token in visible.split(",")]
+    if not all(token.isdigit() for token in tokens):
+        raise RuntimeError(
+            "TRACE runner requires numeric CUDA_VISIBLE_DEVICES entries"
+        )
+    physical_indices = [int(token) for token in tokens]
+    if len(set(physical_indices)) != len(physical_indices):
+        raise ValueError("CUDA_VISIBLE_DEVICES contains duplicate GPU indices")
+    if selected_physical_index not in physical_indices:
+        raise RuntimeError(
+            "Admitted physical GPU is outside CUDA_VISIBLE_DEVICES: "
+            f"{selected_physical_index} not in {physical_indices}"
+        )
+    return f"cuda:{physical_indices.index(selected_physical_index)}"
+
+
 @contextmanager
 def project_file_lock(path: str):
     lock_path = Path(path)
