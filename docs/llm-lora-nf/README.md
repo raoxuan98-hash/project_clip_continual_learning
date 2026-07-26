@@ -15,6 +15,8 @@ content-addressed calibration cache；正式流水线另已加入“单最终 ad
 单临时 merged checkpoint”低存储保留策略。2026-07-26 已在隔离 GPU
 环境完成 `89 passed`，并验证 RTX 4090 CUDA 前后向。当前 6 张 GPU 均有
 约 16--17 GB 显存占用，因此正式实验等待资源准入，不是 CUDA 故障。
+干净提交 `d817858` 的 Qwen3-0.6B 完整 LoRA-NF CPU smoke 也已通过；
+可重建 adapter 验证后已删除，只保留约 16 KB 的非正式报告。
 
 本轮静态审阅进一步固定了训练 seed 与 lm-eval seed 的边界、CPU smoke
 禁用全量 request cache、共享 base evaluation 的内容寻址复用，以及
@@ -39,6 +41,7 @@ PSD 硬校验，以及训练、评测、汇总三层源码/软件环境身份绑
 - [`records/2026-07-26-01-formal-training-and-integrity-chain.md`](records/2026-07-26-01-formal-training-and-integrity-chain.md)：正式训练语义、环境锁与端到端完整性链。
 - [`records/2026-07-26-02-checkpoint-retention-policy.md`](records/2026-07-26-02-checkpoint-retention-policy.md)：checkpoint 数量和低存储保留硬约束。
 - [`records/2026-07-26-03-storage-baseline-and-provenance-audit.md`](records/2026-07-26-03-storage-baseline-and-provenance-audit.md)：PEFT LoRA 基线、缓存/临时文件回收、滤波统计安全和派生证据来源审计。
+- [`records/2026-07-26-04-server-gpu-environment-and-clean-smoke.md`](records/2026-07-26-04-server-gpu-environment-and-clean-smoke.md)：可用 GPU 环境定位、完整测试、干净提交 CPU 闭环与 checkpoint 回收。
 
 ## 文档边界
 

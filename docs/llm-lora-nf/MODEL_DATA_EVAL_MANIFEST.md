@@ -377,6 +377,23 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
 - 确定性生成结果：`smoke-ok`；
 - 该运行标记为 `cpu_smoke_only`，不得进入论文结果。
 
+2026-07-26 在干净提交
+`d817858bc9d125b689e7bbdb244d56c280cfed48` 上重新完成同一闭环：
+
+- 运行前复核模型目录完整性，snapshot manifest SHA-256 为
+  `744cdbbd72f0bc2df371ce77f620c1225c7d21a1679f3aeb7225800a78f97b30`；
+- `source_dirty=false`，LoRA-NF module 数量 `112`，可训练参数
+  `2,293,760`；
+- 一步优化、checkpoint 完整性、保存/重载 logits 等价和确定性生成
+  `smoke-ok` 均通过；
+- 报告位于外部数据根的
+  `cpu_smoke_only/d817858-qwen3-0p6b-lora-nf/smoke_report.json`，
+  SHA-256 为
+  `60573de96281ccc7e74016e2b6c2af809381a306c042481ba34dfdc6b0fc9319`；
+- 约 11.7 MB 的可重建 CPU smoke adapter 已在验证后精确删除，目录只
+  保留约 16 KB 报告；
+- 报告硬标记 `formal_result_eligible=false`，不进入论文表格。
+
 另已完成：
 
 - Qwen3-0.6B 七种方法各 1 个真实数据 optimizer step；
@@ -402,4 +419,4 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
 - [ ] bigcode/FastChat/TRACE evaluator commit；
 - [x] 当前三个缓存模型的 chat template、EOS/pad 和最大长度链路；
 - [x] 静态 adapter/filter/moment 估算脚本；
-- [ ] GPU 修复后的实测峰值与吞吐。
+- [ ] GPU 资源满足准入后的实测峰值与吞吐。
