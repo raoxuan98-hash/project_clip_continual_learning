@@ -74,7 +74,7 @@ PYTHONPATH=src "$LLM_PY" -m pytest -q
 ```
 
 Track A 数值安全截断、Track B 保留回答截断和监督覆盖审计加入后的
-服务器结果为 `155 passed`。
+服务器结果为 `157 passed`。
 只有当前 commit 的完整结果可以写入新记录；不得沿用旧测试计数。
 
 ## 3. 模型与数据

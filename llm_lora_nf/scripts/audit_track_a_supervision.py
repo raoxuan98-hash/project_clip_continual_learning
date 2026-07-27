@@ -8,6 +8,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import torch
+from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from llm_lora_nf.config_io import canonical_config_hash, load_yaml_config
@@ -16,7 +18,10 @@ from llm_lora_nf.dataset_io import load_metamath_examples, sha256_file
 from llm_lora_nf.integrity import validate_directory_integrity
 from llm_lora_nf.model_io import assert_instruct_checkpoint
 from llm_lora_nf.protocol_validation import validate_track_a_formal_config
-from llm_lora_nf.supervision_audit import summarize_integer_series
+from llm_lora_nf.supervision_audit import (
+    summarize_integer_series,
+    summarize_shuffled_zero_schedule,
+)
 
 
 def _git_state(root: Path):
@@ -115,8 +120,28 @@ def main() -> None:
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     snapshot_manifest = model_path / "local_snapshot_manifest.json"
+    supervised_summary = summarize_integer_series(supervised_counts)
+    shuffle_generator = torch.Generator().manual_seed(int(config["run"]["seed"]))
+    shuffled_indices = [
+        int(batch.item())
+        for batch in DataLoader(
+            range(first_n),
+            batch_size=1,
+            shuffle=True,
+            generator=shuffle_generator,
+        )
+    ]
+    schedule_summary = summarize_shuffled_zero_schedule(
+        shuffled_indices,
+        zero_source_indices=supervised_summary["zero_indices"],
+        consumed_rows=int(config["train"]["consumed_examples_per_epoch"]),
+        accumulation_steps=(
+            int(config["train"]["global_batch_size"])
+            // int(config["train"]["per_device_batch_size"])
+        ),
+    )
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "audit": "track_a_official_response_supervision",
         "source": source,
         "config_path": str(Path(args.config).resolve()),
@@ -148,10 +173,13 @@ def main() -> None:
             "sha256": sha256_file(str(data_path)),
             "first_n": first_n,
         },
-        "supervised_tokens_per_row": summarize_integer_series(
-            supervised_counts
-        ),
+        "supervised_tokens_per_row": supervised_summary,
         "sequence_tokens_per_row": summarize_integer_series(sequence_lengths),
+        "seeded_training_schedule": {
+            "seed": int(config["run"]["seed"]),
+            "sampler": "torch_dataloader_random_sampler",
+            **schedule_summary,
+        },
     }
     temporary = output.with_name(f".{output.name}.tmp")
     temporary.write_text(
@@ -166,6 +194,9 @@ def main() -> None:
                 "sha256": _sha256(output),
                 "supervised_tokens_per_row": payload[
                     "supervised_tokens_per_row"
+                ],
+                "seeded_training_schedule": payload[
+                    "seeded_training_schedule"
                 ],
             },
             indent=2,
