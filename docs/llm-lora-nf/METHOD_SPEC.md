@@ -2,7 +2,7 @@
 
 **版本**: 0.4
 **日期**: 2026-07-26
-**状态**: Phase -1 审计完成；当前批服务器完整测试 `89 passed`，正式数值证据仍须来自干净 commit 的 GPU 实验
+**状态**: Phase -1 审计完成；当前批服务器完整测试 `155 passed`，正式数值证据仍须来自干净 commit 的 GPU 实验
 **审计来源**:
 
 - `meta-prompts/2026-07-12-02-作者对Lora_nsp的理解.md`
@@ -287,6 +287,15 @@ attention-only 约束。q/k/v 与 gate/up 的输入完全相同，统一封装�
 adapter-only checkpoint 能从原始 FP32 checkpoint 精确重建。该数值稳定化
 必须在 Track A 报告中披露，并通过同 checkpoint/seed/evaluator 的差异门控，
 不表述为官方代码的逐位复现。
+
+官方 MetaMathQA formatter 对 source 与 source+target 分别执行 512 token
+右截断，再按截断后的 source 长度 mask labels。若 source 自身占满窗口，
+整行 labels 均为 `-100`；官方 Trainer 仍将该行计入 shuffle、gradient
+accumulation 与 scheduler，但 PyTorch mean cross entropy 会返回 NaN。
+本实现不丢弃、不左截断这类 Track A 行，而是把它们作为显式零梯度
+micro-batch 消费，并在训练报告中记录
+`zero_supervision_micro_batches` 与 `supervised_tokens`。Track B 另行固定
+`left_preserve_response`，保证统一比较中的每条样本都有回答监督。
 
 ## 9. 连续任务协议
 

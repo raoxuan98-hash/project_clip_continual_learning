@@ -15,6 +15,8 @@ class TrainingSummary:
     micro_steps: int
     examples: int
     non_padding_tokens: int
+    supervised_tokens: int
+    zero_supervision_micro_batches: int
     tokens_per_second: float
     discarded_micro_batches: int
     gradient_accumulation_steps: int
@@ -69,6 +71,8 @@ def train_steps(
     micro_step = 0
     examples = 0
     non_padding_tokens = 0
+    supervised_tokens = 0
+    zero_supervision_micro_batches = 0
     accumulated_loss = torch.zeros((), device=device, dtype=torch.float32)
     while optimizer_steps < max_steps:
         saw_batch = False
@@ -87,10 +91,23 @@ def train_steps(
                     if attention_mask is not None
                     else input_ids.numel()
                 )
-            outputs = model(**moved)
-            loss = outputs.loss / gradient_accumulation_steps
-            loss.backward()
-            accumulated_loss.add_(outputs.loss.detach().float())
+            labels = batch.get("labels")
+            supervised_in_batch = (
+                int(labels.ne(-100).sum().item())
+                if labels is not None
+                else 0
+            )
+            supervised_tokens += supervised_in_batch
+            zero_supervision = (
+                labels is not None and supervised_in_batch == 0
+            )
+            if zero_supervision:
+                zero_supervision_micro_batches += 1
+            else:
+                outputs = model(**moved)
+                loss = outputs.loss / gradient_accumulation_steps
+                loss.backward()
+                accumulated_loss.add_(outputs.loss.detach().float())
             micro_step += 1
             if micro_step % gradient_accumulation_steps == 0:
                 optimizer.step()
@@ -116,6 +133,8 @@ def train_steps(
         micro_steps=micro_step,
         examples=examples,
         non_padding_tokens=non_padding_tokens,
+        supervised_tokens=supervised_tokens,
+        zero_supervision_micro_batches=zero_supervision_micro_batches,
         tokens_per_second=non_padding_tokens / elapsed,
         discarded_micro_batches=0,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -196,6 +215,8 @@ def train_epochs(
     micro_step = 0
     examples = 0
     non_padding_tokens = 0
+    supervised_tokens = 0
+    zero_supervision_micro_batches = 0
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     started = time.monotonic()
@@ -220,15 +241,34 @@ def train_epochs(
                     if attention_mask is not None
                     else input_ids.numel()
                 )
-            with torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=use_bf16,
-            ):
-                outputs = model(**moved)
-                scaled_loss = outputs.loss / effective_group_size
-            scaled_loss.backward()
-            accumulated_loss.add_(outputs.loss.detach().float())
+            labels = batch.get("labels")
+            supervised_in_batch = (
+                int(labels.ne(-100).sum().item())
+                if labels is not None
+                else 0
+            )
+            supervised_tokens += supervised_in_batch
+            zero_supervision = (
+                labels is not None and supervised_in_batch == 0
+            )
+            if zero_supervision:
+                # The audited LoRA-Null preprocessing can right-truncate an
+                # entire response. Transformers still consumes that micro-batch
+                # in the accumulation schedule, but mean cross entropy over
+                # all ignored labels is NaN. Its parameter gradients are zero.
+                # Skip only the numerically undefined forward/backward while
+                # preserving the micro-batch, optimizer, and scheduler budget.
+                zero_supervision_micro_batches += 1
+            else:
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.bfloat16,
+                    enabled=use_bf16,
+                ):
+                    outputs = model(**moved)
+                    scaled_loss = outputs.loss / effective_group_size
+                scaled_loss.backward()
+                accumulated_loss.add_(outputs.loss.detach().float())
             micro_step += 1
             should_step = (
                 (batch_index + 1) % effective_group_size == 0
@@ -257,6 +297,8 @@ def train_epochs(
         micro_steps=micro_step,
         examples=examples,
         non_padding_tokens=non_padding_tokens,
+        supervised_tokens=supervised_tokens,
+        zero_supervision_micro_batches=zero_supervision_micro_batches,
         tokens_per_second=non_padding_tokens / elapsed,
         discarded_micro_batches=total_available_micro_batches - micro_step,
         gradient_accumulation_steps=gradient_accumulation_steps,

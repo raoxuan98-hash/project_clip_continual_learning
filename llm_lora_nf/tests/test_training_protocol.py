@@ -43,6 +43,8 @@ def test_formal_style_accumulation_drops_incomplete_remainder():
     assert summary.micro_steps == 8
     assert summary.examples == 8
     assert summary.non_padding_tokens == 16
+    assert summary.supervised_tokens == 16
+    assert summary.zero_supervision_micro_batches == 0
     assert summary.discarded_micro_batches == 2
     assert len(summary.losses) == 2
     assert summary.tokens_per_second > 0.0
@@ -65,3 +67,27 @@ def test_tiny_smoke_batch_uses_one_complete_effective_group():
     assert summary.micro_steps == 2
     assert summary.examples == 2
     assert summary.discarded_micro_batches == 0
+
+
+def test_all_ignored_labels_consume_schedule_without_nan():
+    batches = _batches(2)
+    batches[0]["labels"].fill_(-100)
+    summary = train_epochs(
+        TinyLossModel(),
+        batches,
+        device=torch.device("cpu"),
+        epochs=1,
+        learning_rate=1e-3,
+        weight_decay=0.0,
+        warmup_ratio=0.0,
+        gradient_accumulation_steps=2,
+        precision="fp32",
+        max_grad_norm=1.0,
+    )
+    assert summary.steps == 1
+    assert summary.micro_steps == 2
+    assert summary.examples == 2
+    assert summary.supervised_tokens == 2
+    assert summary.zero_supervision_micro_batches == 1
+    assert len(summary.losses) == 1
+    assert torch.isfinite(torch.tensor(summary.losses)).all()

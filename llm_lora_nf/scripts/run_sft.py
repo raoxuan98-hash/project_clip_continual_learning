@@ -276,6 +276,7 @@ def _run(args: argparse.Namespace) -> None:
         tokenizer,
         max_length=int(train_config["max_sequence_length"]),
         enable_thinking=bool(config["model"].get("enable_thinking", False)),
+        truncation_strategy=str(train_config["truncation_strategy"]),
     )
     generator = torch.Generator().manual_seed(seed)
     training_collator = ResponseOnlyCollator(tokenizer.pad_token_id)

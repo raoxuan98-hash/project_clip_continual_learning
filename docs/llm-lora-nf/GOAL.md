@@ -390,6 +390,10 @@ Qwen3-0.6B 可以进入补充结果，但不能独自支撑“在 1B--3B LLM 上
 - 优先使用作者官方代码和公开配置；
 - 保留每种方法必要的初始化、校准数据和方法特定预处理；
 - 固定到经过记录的官方 commit；
+- LoRA-Null 数学 Track A 保留官方 Alpaca prompt、512 token 右截断与
+  shuffled accumulation 预算；若回答被 prompt 完全截断，该行仍按官方
+  调度位置消费，但以显式零梯度 micro-batch 处理并记录数量，避免
+  all-ignore cross entropy 的 NaN 污染；
 - 如果原论文不是 Instruct checkpoint，只复现其数据、训练和评测协议，不宣称绝对数值严格复现；
 - 在同一 Instruct checkpoint、同一 seed 和同一 evaluator 下，官方实现与本项目统一封装的差异原则上不超过 0.5 个绝对分数；超过时必须诊断并记录。
 
@@ -397,6 +401,9 @@ Qwen3-0.6B 可以进入补充结果，但不能独自支撑“在 1B--3B LLM 上
 
 - 所有方法仅适配 `q_proj/k_proj/v_proj/o_proj`；
 - 统一 Instruct checkpoint、数据、prompt/chat template、训练预算和 evaluator；
+- 统一使用 `left_preserve_response` 截断策略，在 512 token 预算内优先
+  保留 assistant response；该规则属于 Track B，不反向改写 Track A
+  的官方右截断语义；
 - 主表报告同 rank 比较；
 - 补充近似同可训练参数量比较；
 - 方法必需的校准仍可保留，但校准样本、时间、显存和存储必须单独报告。

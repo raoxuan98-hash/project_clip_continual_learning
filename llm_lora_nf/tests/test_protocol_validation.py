@@ -81,6 +81,14 @@ def test_track_b_validation_rejects_budget_drift():
         validate_track_b_formal_config(changed)
 
 
+def test_track_b_validation_rejects_response_losing_truncation():
+    config = load_yaml_config(str(CONFIG_ROOT / "math_lora_nf.yaml"))
+    changed = copy.deepcopy(config)
+    changed["train"]["truncation_strategy"] = "right"
+    with pytest.raises(ValueError, match="train.truncation_strategy"):
+        validate_track_b_formal_config(changed)
+
+
 def test_track_b_validation_rejects_checkpoint_retention_drift():
     config = load_yaml_config(str(CONFIG_ROOT / "math_lora_nf.yaml"))
     changed = copy.deepcopy(config)

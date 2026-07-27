@@ -57,6 +57,7 @@ train:
   first_n: 100000
   prompt_format: official_lora_null_alpaca_style
   max_sequence_length: 512
+  truncation_strategy: official_right
   epochs: 1
   per_device_batch_size: 1
   global_batch_size: 128

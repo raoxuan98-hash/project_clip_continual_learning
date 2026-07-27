@@ -164,10 +164,6 @@ def encode_official_lora_null_math_example(
     labels[: min(source_length, len(labels))] = [IGNORE_INDEX] * min(
         source_length, len(labels)
     )
-    if not labels or all(label == IGNORE_INDEX for label in labels):
-        raise ValueError(
-            "The response was fully truncated; increase max_length or shorten the prompt"
-        )
     return {
         "input_ids": torch.tensor(full_ids, dtype=torch.long),
         "attention_mask": torch.ones(len(full_ids), dtype=torch.long),

@@ -45,7 +45,7 @@ TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
 等价测试均已通过，未引入八份阶段模型 checkpoint。TRACE 的数据读取、
 Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务×时间聚合和
 连续训练 runner、状态消融编排和 token 长度审计也已接通；当前服务器
-完整回归为 `150 passed`。长度审计进一步定位到早期训练编码的
+完整回归为 `155 passed`。长度审计进一步定位到早期训练编码的
 右截断与 TRACE 官方左截断不一致：官方 LoRA 协议仍是
 `1024 prompt + 512 answer = 1536` combined limit，但从左侧截断以保留
 回答。修复及全量长度审计已通过，不再把极长 MeetingBank prompt 误解为
@@ -75,6 +75,13 @@ forgetting、BWT 三门限，因此严格按事先规则回退并冻结原始
 `e20_r02`，停止继续调参。该结论仍为 `formal_result_eligible=false`；
 它说明当前 TRACE-500 pilot 上完整 LoRA-NF 的保留—适应折衷尚未达到
 LoRA 的可接受适应性水平，而不是方法优势证据。
+
+首个 Llama-3.2-3B Track A gate 在正式训练前的数据取样阶段暴露了
+LoRA-Null 官方 MetaMathQA 512 右截断会产生全 `-100` labels。复核固定
+官方 commit 后，Track A 现保留这些行的 shuffle、accumulation 和
+scheduler 位置，以显式零梯度 micro-batch 避免 NaN，并将数量写入报告；
+Track B 则在尚无正式输出时预注册为 `left_preserve_response`。代码回归
+通过后还需完成 10 万条纯 tokenizer 监督覆盖审计，才会重启 3B gate。
 
 干净提交 `2cdd550` 的 Qwen3-0.6B TRACE 最小 GPU 闭环已通过：只使用
 GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性生成、

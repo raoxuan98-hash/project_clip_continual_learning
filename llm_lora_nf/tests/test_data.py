@@ -142,3 +142,13 @@ def test_official_lora_null_formatter_uses_repository_prompt():
         for value in row["labels"][row["labels"] != IGNORE_INDEX].tolist()
     )
     assert supervised == "2<eos>"
+
+
+def test_official_lora_null_formatter_preserves_fully_truncated_row():
+    row = encode_official_lora_null_math_example(
+        ChatExample("P" * 64, "Answer"),
+        OfficialCharacterTokenizer(),
+        max_length=32,
+    )
+    assert row["input_ids"].numel() == 32
+    assert torch.all(row["labels"] == IGNORE_INDEX)

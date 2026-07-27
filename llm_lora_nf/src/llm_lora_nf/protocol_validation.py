@@ -169,6 +169,7 @@ def validate_track_b_formal_config(config: Mapping[str, Any]) -> None:
         target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
     )
     _validate_track_b_training_dataset(config)
+    _expect(config, "train.truncation_strategy", "left_preserve_response")
     _expect(config, "train.optimizer", "adamw")
     _expect(config, "calibration.batch_size", 8)
     _expect(config, "calibration.max_sequence_length", 1024)
@@ -232,6 +233,7 @@ def validate_track_a_formal_config(config: Mapping[str, Any]) -> None:
     _validate_metamath_training(config)
     _expect(config, "train.optimizer", "adamw_torch")
     _expect(config, "train.prompt_format", "official_lora_null_alpaca_style")
+    _expect(config, "train.truncation_strategy", "official_right")
     _expect(config, "calibration.batch_size", 1)
     _expect(config, "calibration.max_sequence_length", 2048)
     _expect(config, "calibration.sampling", "raw_character_spans")

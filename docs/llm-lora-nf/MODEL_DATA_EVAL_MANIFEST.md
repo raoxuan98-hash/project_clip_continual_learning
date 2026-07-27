@@ -113,6 +113,9 @@ o_proj
 - 样本：按 LoRA-Null 官方顺序取前 100,000 条；
 - checkpoint：Instruct；
 - loss：只在 assistant response token 上计算；
+- Track B 训练编码固定 `left_preserve_response`：先渲染完整 Instruct
+  chat，再从左侧裁到 512 token，以优先保留 assistant response；正式配置
+  门禁拒绝回退到 tokenizer 默认右截断；
 - epoch：1；
 - optimizer：AdamW；
 - learning rate：`2e-5`；
@@ -212,6 +215,10 @@ Track B 只统一 attention-only 目标范围与训练预算，不把 LoRA-Null 
   `5d7739f15a6e50de416977fe2cc9cb516d67edda` 的 Trainer 语义，每 epoch
   执行 781 个完整 optimizer groups，实际消费 99,968 条，尾部 32 条
   shuffled 样本不进入更新；
+- 官方 512 token 右截断产生的全 `-100` labels 行不删除、不重排；
+  本实现按原 accumulation/scheduler 位置把它们作为显式零梯度
+  micro-batch 消费，并把数量和监督 token 总数写入训练报告。正式启动前
+  用 `audit_track_a_supervision.py` 对前 100,000 条逐行封存统计；
 - AdamW 固定 betas `0.9/0.999`、epsilon `1e-8`、梯度裁剪 `1.0`；
 - rank/alpha/dropout：`128/128/0.0`；
 - dropout 为 0 时，官方 LoRA 对照包装

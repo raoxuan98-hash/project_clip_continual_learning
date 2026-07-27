@@ -24,8 +24,8 @@ export CODE_GENERATION_ROOT="$LLM_DATA_ROOT/code_generation"
 export CODE_EXECUTION_ROOT="$LLM_DATA_ROOT/code_execution"
 export REQUEST_CACHE_ROOT="$LLM_DATA_ROOT/request_cache"
 export EVAL_HF_HOME="$LLM_DATA_ROOT/eval_hf_cache"
-export EVAL_MANIFEST="$EVAL_HF_HOME/math_knowledge_prepare_manifest_v2.json"
-export EVALUATOR_PATH=/path/to/clean/lm-evaluation-harness-v0.4.12
+export EVAL_MANIFEST="$EVAL_HF_HOME/math_knowledge_prepare_manifest.json"
+export EVALUATOR_PATH="$LLM_DATA_ROOT/evaluators/lm-evaluation-harness-v0.4.12"
 export EVALPLUS_PATH="$LLM_DATA_ROOT/evaluators/evalplus-v0.3.1"
 export EVALPLUS_DATA_ROOT="$LLM_DATA_ROOT/evalplus_release_cache"
 export EVALPLUS_MANIFEST="$EVALPLUS_DATA_ROOT/evalplus_data_manifest.json"
@@ -34,6 +34,8 @@ export TRACE_PILOT_ROOT="$PWD/data/trace_mirror_audit/extracted/LLM-CL-Benchmark
 export TRACE_OUTPUT_ROOT="$LLM_DATA_ROOT/trace_pilot"
 export NQ_PARQUET="$LLM_DATA_ROOT/dataset_cache/opencompass/nq_open/nq_open/train-00000-of-00001.parquet"
 export QWEN3_0P6B="$LLM_DATA_ROOT/model_cache/Qwen/Qwen3-0___6B"
+export LLAMA3P2_3B="$LLM_DATA_ROOT/model_cache/LLM-Research/Llama-3___2-3B-Instruct"
+export METAMATH_JSON="$LLM_DATA_ROOT/hf_mirror_cache/datasets--meta-math--MetaMathQA/snapshots/aa4f34d3d2d3231299b5b03d9b3e5a20da45aa18/MetaMathQA-395K.json"
 ```
 
 `EVALUATOR_PATH` 必须指向 clean commit
@@ -71,8 +73,8 @@ git rev-parse HEAD
 PYTHONPATH=src "$LLM_PY" -m pytest -q
 ```
 
-TRACE 连续训练/评测链和集成 smoke 修复加入后的服务器结果为
-`133 passed`。
+Track A 数值安全截断、Track B 保留回答截断和监督覆盖审计加入后的
+服务器结果为 `155 passed`。
 只有当前 commit 的完整结果可以写入新记录；不得沿用旧测试计数。
 
 ## 3. 模型与数据
@@ -142,6 +144,22 @@ python scripts/check_resources.py --requested 1
 使用一张 GPU，始终至少留空一张。
 
 ### 5.1 Track A gate
+
+首次启动某个 Track A 模型/数据组合前，先在 CPU 上执行纯 tokenizer
+监督覆盖审计；它不加载模型权重、不产生实验性能：
+
+```bash
+"$LLM_PY" scripts/audit_track_a_supervision.py \
+  --config configs/paper/math_track_a_llama3p2_3b.yaml \
+  --model-path "$LLAMA3P2_3B" \
+  --metamath-json "$METAMATH_JSON" \
+  --output "$LLM_DATA_ROOT/protocol_audits/track_a_llama3p2_3b_supervision.json"
+```
+
+审计必须绑定 clean commit、model snapshot integrity、MetaMathQA SHA-256，
+并报告全截断行的精确索引。Track A 保留官方 512 token 右截断；全 `-100`
+labels 行仍消费原 accumulation/scheduler 位置，但显式按零梯度处理。
+Track B 则由正式配置门禁固定 `left_preserve_response`，两者不能混用。
 
 ```bash
 python scripts/launch_math_matrix.py \
