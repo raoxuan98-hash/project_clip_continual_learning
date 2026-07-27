@@ -309,6 +309,21 @@ summary SHA-256 为
 `LoRA-Null > DoRA > LoRA > LoRA-NF`；LoRA-NF 的 standard forgetting
 最低。该结果只触发一次预注册的滤波强度诊断，不改变正式结果门禁。
 
+滤波诊断 spec 为
+`configs/continual/trace_qwen3_0p6b_filter_ablation.yaml`。提交
+`ac34edf` 上的四个新候选已与既有 `e20_r02`、LoRA reference 一并由
+`scripts/aggregate_trace_filter_ablation.py` 审计。选择报告位于：
+
+```text
+trace_pilot/filter_ablation/ac34edf-qwen3-0p6b-seed42/filter_selection.json
+```
+
+报告 SHA-256 为
+`8e0e378e66268c564cd38dad4f2d0d3fe6472cb7582b5e1847ca6d94b8c67667`。
+五个设置均未通过三项预注册门限，最终按规则冻结 `e20_r02` 并停止继续
+调参。所有 smoke adapter 已删除；新增目录约 3.1 MB，仅保留报告、
+压缩预测和完整性 manifest。
+
 任何 `--max-tasks`、行数、步数、生成长度或 calibration 截断都会把
 GPU 输出硬标为 `gpu_chain_smoke_only`，即使服务器有可用 GPU，也不能
 作为完整 pilot 或正式结果。

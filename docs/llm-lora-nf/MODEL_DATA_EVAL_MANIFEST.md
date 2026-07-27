@@ -373,15 +373,22 @@ Google Drive。不得把分别下载的相似原始数据集拼接后宣称为 T
   `NumGLUE-cm` 为 41 + 81。
 
 因此该归档固定标记为 `treelora_500_pilot`，只允许链路、状态更新消融
-和预算估算，绝不进入正式论文主表。正式 `paper_5k` 必须同时满足：
+和预算估算，绝不进入正式论文主表。论文正文概括为 5,000 train /
+2,000 test，但公开发布档的 eval/test 行数按任务不同；二级复现仓库对
+官方压缩包的统计例如 FOMC test 496、MeetingBank test 692、
+NumGLUE-cm test 81。因此不得用统一 2,000 的推测覆盖实际发布文件。
+正式 `paper_5k` 必须同时满足：
 
 1. 每任务恰好 5,000 条 train；
-2. 每任务 test 恰好 2,000 条，且 eval 非空；
+2. eval/test 非空，且每任务行数与审核后的官方发布档 manifest 精确一致；
 3. 八任务 24 个 JSON 文件都有外部审阅后锁定的精确 SHA-256；
 4. 来源 manifest 能证明为官方 Drive 文件或内容等价镜像；
 5. prompt/answer schema、顺序与 evaluator 输入逐项通过审计。
 
-仅通过行数检查仍标记 `formal_eligible=false`，不能启动正式结果收集。
+仅通过 5,000 train、非空 split 和 schema 检查仍标记
+`formal_eligible=false`，不能启动正式结果收集。旧版统一要求每任务
+2,000 test 的代码门禁已于 2026-07-27 移除，以免错误拒绝官方发布档；
+严格性由待锁定的逐任务行数与文件哈希 manifest 提供。
 
 ### 8.3 连续状态与单最终 adapter
 
@@ -463,6 +470,35 @@ LoRA-NF 的 forgetting 最低，但 final average 比 LoRA 低 `0.01589`，
 `acc1c94e854a38e9b3315f6a8d771b8de39188500fa36b18bcde40e32f021f73`；
 所有 adapter 均在完整性/重放审计后删除，证据目录约 3.1 MB。
 结果硬标 `formal_result_eligible=false`。
+
+### 8.7 TRACE-500 LoRA-NF 滤波强度消融
+
+按 8.6 的负面结果，只执行一次提交
+`ac34edf39045821aed194e0b6ed6a897056bb7f0` 上预注册的五设置检查。沿用
+同一 Qwen3-0.6B Instruct checkpoint、seed 42、官方顺序、完整 500
+train、前 20 test、128 new tokens、64 NQ calibration 和
+`reference_fixed` 状态：
+
+| 设置（energy/leakage） | Final average | TRACE-BWT | Standard forgetting | Wall seconds |
+|---|---:|---:|---:|---:|
+| `e20_r02`（0.20/0.02） | 0.31378 | -0.03816 | 0.05919 | 2201.27 |
+| `e20_r05`（0.20/0.05） | **0.32262** | **-0.02671** | **0.04482** | 2238.69 |
+| `e20_r10`（0.20/0.10） | 0.30259 | -0.05540 | 0.08595 | 2208.45 |
+| `e20_r20`（0.20/0.20） | 0.30716 | -0.04637 | 0.06014 | 2196.63 |
+| `e10_r10`（0.10/0.10） | 0.30033 | -0.05832 | 0.07490 | 2200.15 |
+
+选择门限由 LoRA reference 确定：final average 至少 `0.3246693`、
+forgetting 至多 `0.0787988`、TRACE-BWT 至少 `-0.0514489`。
+`e20_r05` 的 forgetting/BWT 通过，但 final average 差 `0.0020521`；
+其余设置也未三门全过。因此 `passed_settings=[]`，严格按预注册
+`default_on_failed_gate` 冻结 `e20_r02`，不事后改选严格支配它但未过
+适应性门限的 `e20_r05`，也不继续搜索超参数。
+
+机器生成的 `filter_selection.json` SHA-256 为
+`8e0e378e66268c564cd38dad4f2d0d3fe6472cb7582b5e1847ca6d94b8c67667`。
+五个设置的 adapter 均已删除，无 optimizer/scheduler/权重残留；本次
+新增证据共约 3.1 MB。完整回归为 `150 passed, 3 warnings`。该检查只
+具备 `treelora_500_pilot` 资格，不进入正式论文结果。
 
 ## 9. 两条评测轨道
 

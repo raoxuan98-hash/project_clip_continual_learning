@@ -39,7 +39,7 @@ def test_paper_trace_audit_checks_cardinality_but_does_not_self_qualify(tmp_path
     assert len(audit["files"]) == 24
     assert audit["formal_eligible"] is False
     assert audit["qualification"] == (
-        "cardinality_only_requires_locked_exact_source_manifest"
+        "train_cardinality_and_schema_only_requires_locked_exact_source_manifest"
     )
 
 
@@ -59,10 +59,27 @@ def test_paper_trace_audit_rejects_reduced_training_or_evaluation(tmp_path):
         reduced_test,
         train_rows=5000,
         eval_rows=100,
-        test_rows=100,
+        test_rows=0,
     )
-    with pytest.raises(ValueError, match="2000 test rows"):
+    with pytest.raises(ValueError, match="non-empty test split"):
         audit_trace_dataset(str(reduced_test), protocol="paper_5k")
+
+
+def test_paper_trace_audit_does_not_assume_uniform_test_cardinality(tmp_path):
+    _write_dataset(
+        tmp_path,
+        train_rows=5000,
+        eval_rows=41,
+        test_rows=81,
+    )
+    audit = audit_trace_dataset(str(tmp_path), protocol="paper_5k")
+    test_cardinalities = {
+        record["rows"]
+        for record in audit["files"]
+        if record["split"] == "test"
+    }
+    assert test_cardinalities == {81}
+    assert audit["formal_eligible"] is False
 
 
 def test_trace_audit_rejects_schema_drift(tmp_path):

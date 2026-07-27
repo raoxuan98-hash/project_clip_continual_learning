@@ -39,18 +39,18 @@ launcher、训练 seed/adapter 哈希身份链和三 seed 配对统计。
 TRACE 开发现已锁定官方 evaluator commit、两种任务顺序、epochs、
 OP/BWT/forgetting 定义和正式数据资格门禁。TreeLoRA 固定 commit 的
 TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
-校验，但明确只作为 pilot；它不会被冒充为每任务 5k/2k 的论文协议。
+校验，但明确只作为 pilot；它不会被冒充为每任务 5k train 的官方发布档。
 连续方法采用 task merge/reset：每个阶段只在内存追加可重放低秩分支，
 最后写一个累计 adapter。LoRA-NF、LoRA-Null 与 DoRA 的多任务重放
 等价测试均已通过，未引入八份阶段模型 checkpoint。TRACE 的数据读取、
 Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务×时间聚合和
 连续训练 runner、状态消融编排和 token 长度审计也已接通；当前服务器
-完整回归为 `143 passed`。长度审计进一步定位到当前训练编码的
+完整回归为 `150 passed`。长度审计进一步定位到早期训练编码的
 右截断与 TRACE 官方左截断不一致：官方 LoRA 协议仍是
 `1024 prompt + 512 answer = 1536` combined limit，但从左侧截断以保留
-回答。修复现已进入服务器复核，不再把极长 MeetingBank prompt 误解为
+回答。修复及全量长度审计已通过，不再把极长 MeetingBank prompt 误解为
 必须将所有方法扩展到 48k 上下文。正式
-5k/2k 数据尚未取得精确来源 manifest，因此 runner 会硬阻止正式结果，
+5k train 官方发布档尚未取得精确来源 manifest，因此 runner 会硬阻止正式结果，
 只允许已核验 TRACE-500 做状态消融和链路 pilot。
 
 提交 `74a34e9` 上的 TRACE-500 状态消融已经完成并封存。combined-left
@@ -66,6 +66,15 @@ LoRA-Null `0.36517`、DoRA `0.33469`、LoRA `0.32967`、LoRA-NF
 `energy_fraction=0.20/leakage=0.02` 显著牺牲了任务适应。该负面 pilot
 结果已原样封存，将按目标允许的一次预注册小型滤波强度检查继续诊断，
 不会被表述为正式优势。
+
+唯一一次预注册滤波强度检查也已完成。`e20_r05` 将 final average 提升到
+`0.32262`，并把 forgetting 降到 `0.04482`、TRACE-BWT 提升到
+`-0.02671`，但 final average 仍低于相对 LoRA 的预注册下限
+`0.32467`；其余三个候选更差。五个设置均未同时通过 average、
+forgetting、BWT 三门限，因此严格按事先规则回退并冻结原始
+`e20_r02`，停止继续调参。该结论仍为 `formal_result_eligible=false`；
+它说明当前 TRACE-500 pilot 上完整 LoRA-NF 的保留—适应折衷尚未达到
+LoRA 的可接受适应性水平，而不是方法优势证据。
 
 干净提交 `2cdd550` 的 Qwen3-0.6B TRACE 最小 GPU 闭环已通过：只使用
 GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性生成、
@@ -96,6 +105,7 @@ GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性�
 - [`records/2026-07-27-02-trace-length-audit.md`](records/2026-07-27-02-trace-length-audit.md)：状态 pilot 在第三阶段 MeetingBank 暴露右截断问题；全量审计与官方代码核对后锁定 1536 token combined-left 协议。
 - [`records/2026-07-27-03-trace-state-selection.md`](records/2026-07-27-03-trace-state-selection.md)：combined-left 修复后的八任务状态消融、完整性哈希、低存储回收和 `reference_fixed` 选择结果。
 - [`records/2026-07-27-04-trace-four-method-pilot.md`](records/2026-07-27-04-trace-four-method-pilot.md)：LoRA/DoRA/LoRA-Null/LoRA-NF 同协议 TRACE-500 pilot、负面结果和后续单次滤波强度诊断决策。
+- [`records/2026-07-27-05-trace-filter-ablation.md`](records/2026-07-27-05-trace-filter-ablation.md)：唯一一次预注册滤波强度消融、门限选择、数据来源续查和停止调参决策。
 
 ## 文档边界
 

@@ -246,9 +246,11 @@ def audit_trace_dataset(
     """Audit a TRACE directory without changing or re-ordering its rows.
 
     ``treelora_500_pilot`` is a fixed, non-formal chain dataset.  ``paper_5k``
-    checks the paper-level cardinalities but intentionally refuses to qualify
-    an unregistered mirror: callers must also bind the returned file records
-    to an externally reviewed, exact source manifest before formal training.
+    checks the released protocol's stable 5k training cardinality and split
+    schema, but intentionally refuses to qualify an unregistered mirror.
+    Released eval/test cardinalities vary by task, so those exact counts and
+    hashes must come from the externally reviewed source manifest rather than
+    from the paper's aggregate 2k-test description.
     """
 
     dataset_root = Path(root).resolve()
@@ -306,14 +308,13 @@ def audit_trace_dataset(
                 raise ValueError(
                     f"TRACE paper protocol requires a non-empty eval split: {task}"
                 )
-            if splits["test"].rows != 2000:
+            if splits["test"].rows <= 0:
                 raise ValueError(
-                    "TRACE paper protocol requires 2000 test rows: "
-                    f"{task}"
+                    f"TRACE paper protocol requires a non-empty test split: {task}"
                 )
         formal_eligible = False
         qualification = (
-            "cardinality_only_requires_locked_exact_source_manifest"
+            "train_cardinality_and_schema_only_requires_locked_exact_source_manifest"
         )
     else:
         formal_eligible = False
