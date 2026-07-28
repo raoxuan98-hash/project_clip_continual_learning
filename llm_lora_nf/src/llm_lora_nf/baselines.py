@@ -225,7 +225,11 @@ def build_peft_baseline(model: nn.Module, config: AdapterConfig, method: str) ->
         task_type=TaskType.CAUSAL_LM,
         **kwargs,
     )
-    return get_peft_model(model, peft_config)
+    return get_peft_model(
+        model,
+        peft_config,
+        autocast_adapter_dtype=True,
+    )
 
 
 def build_corda_baseline(
@@ -262,4 +266,8 @@ def build_corda_baseline(
         corda_config=corda_config,
     )
     preprocess_corda(model, peft_config, run_model=run_calibration)
-    return get_peft_model(model, peft_config)
+    return get_peft_model(
+        model,
+        peft_config,
+        autocast_adapter_dtype=True,
+    )

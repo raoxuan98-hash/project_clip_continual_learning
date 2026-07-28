@@ -1,10 +1,15 @@
 import hashlib
 import json
+import sys
+from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from llm_lora_nf.artifact_retention import LOCKED_ARTIFACT_RETENTION
 from llm_lora_nf.integrity import write_directory_integrity
+import scripts.launch_math_matrix as training_launcher
 from scripts.aggregate_lm_eval import _model_identity, _validated_run
 from scripts.aggregate_seed_results import _validate_summary_derivations
 from scripts.launch_math_evaluation import (
@@ -16,6 +21,7 @@ from scripts.launch_math_evaluation import (
 )
 from scripts.launch_math_matrix import (
     _completed_formal_run as _completed_training_matrix_run,
+    _write_launcher_manifest,
 )
 
 
@@ -24,6 +30,146 @@ def _write_json(path, payload):
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def test_training_launcher_manifest_records_parallel_gpu_budget(tmp_path):
+    manifest = _write_launcher_manifest(
+        tmp_path,
+        stage="main",
+        runner="track_b",
+        matrix_path=tmp_path / "matrix.yaml",
+        source_commit="source-sha",
+        max_parallel=3,
+        jobs=[
+            {
+                "run_name": "run-a",
+                "status": "running",
+                "selected_physical_gpu": 2,
+            }
+        ],
+    )
+    assert manifest["format_version"] == 2
+    assert manifest["max_parallel"] == 3
+    assert manifest["jobs"][0]["selected_physical_gpu"] == 2
+    assert json.loads(
+        (tmp_path / "launcher_manifest.json").read_text(encoding="utf-8")
+    ) == manifest
+
+
+def test_training_launcher_assigns_unique_gpus_within_each_batch(
+    tmp_path,
+    monkeypatch,
+):
+    matrix_path = tmp_path / "matrix.yaml"
+    _write_json(
+        matrix_path,
+        {
+            "artifact_retention": LOCKED_ARTIFACT_RETENTION,
+            "stages": {
+                "main": {
+                    "runner": "track_b",
+                    "models": ["model"],
+                    "methods": ["lora", "dora", "lora_nf"],
+                    "seeds": [42],
+                }
+            },
+            "models": {
+                "model": {
+                    "config": "model.yaml",
+                    "model_path": str(tmp_path / "model"),
+                }
+            },
+            "data": {
+                "train_json": str(tmp_path / "train.json"),
+                "nq_parquet": str(tmp_path / "nq.parquet"),
+            },
+        },
+    )
+    monkeypatch.setattr(
+        training_launcher,
+        "load_yaml_config",
+        lambda _: {"model": {"id": "publisher/instruct"}},
+    )
+    monkeypatch.setattr(training_launcher, "_git_commit", lambda _: "commit")
+    monkeypatch.setattr(training_launcher, "_source_dirty", lambda _: False)
+    monkeypatch.setattr(
+        training_launcher,
+        "project_file_lock",
+        lambda _: nullcontext(),
+    )
+    monkeypatch.setattr(
+        training_launcher,
+        "_completed_formal_run",
+        lambda output_dir, **_: (Path(output_dir) / "done").exists(),
+    )
+    monkeypatch.setattr(
+        training_launcher,
+        "inspect_admission",
+        lambda requested: SimpleNamespace(
+            mode="gpu",
+            selected_gpu_indices=[2, 3][:requested],
+            reason="test",
+        ),
+    )
+    launched = []
+
+    class FakeProcess:
+        next_pid = 100
+
+        def __init__(self, command, env):
+            self.command = command
+            self.env = env
+            self.pid = FakeProcess.next_pid
+            FakeProcess.next_pid += 1
+            output_dir = Path(
+                command[command.index("--output-dir") + 1]
+            )
+            output_dir.mkdir(parents=True)
+            (output_dir / "done").touch()
+            launched.append(self)
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(training_launcher.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "launch_math_matrix.py",
+            "--matrix",
+            str(matrix_path),
+            "--stage",
+            "main",
+            "--output-root",
+            str(tmp_path / "outputs"),
+            "--max-parallel",
+            "2",
+        ],
+    )
+    training_launcher._main_locked()
+    assert [process.env["CUDA_VISIBLE_DEVICES"] for process in launched] == [
+        "2",
+        "3",
+        "2",
+    ]
+    assert all(
+        process.env["LLM_LORA_NF_PARENT_MANAGED_GPU_BATCH"] == "1"
+        for process in launched
+    )
+    manifest = json.loads(
+        (
+            tmp_path
+            / "outputs"
+            / "main"
+            / "launcher_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [job["status"] for job in manifest["jobs"]] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
 
 
 def test_validated_run_requires_untampered_evaluation_output(tmp_path):
@@ -272,6 +418,26 @@ def test_training_resume_validation_binds_method_model_seed_and_checkpoint(
             "seed": 42,
             "commit_sha": "training-sha",
         },
+        "parameters": {"total": 100, "trainable": 10},
+        "training": {
+            "steps": 1,
+            "supervised_tokens": 8,
+            "trainable_parameters": 10,
+            "losses": [1.25],
+        },
+        "post_training_parameter_finiteness": {
+            "all_finite": True,
+            "checked_tensor_count": 2,
+            "checked_parameter_count": 10,
+        },
+        "initialization_validation": {
+            "status": "passed",
+            "max_absolute_error": 0.0,
+            "mean_absolute_error": 0.0,
+            "rmse": 0.0,
+            "reference_rms": 1.0,
+            "relative_rmse": 0.0,
+        },
         "checkpoint_integrity": checkpoint_integrity,
     }
     _write_json(tmp_path / "run_report.json", report)
@@ -298,6 +464,18 @@ def test_training_resume_validation_binds_method_model_seed_and_checkpoint(
         expected_commit="new-source-sha",
     )
 
+    report["training"]["losses"] = [float("nan")]
+    _write_json(tmp_path / "run_report.json", report)
+    with pytest.raises(ValueError, match="finite numerical evidence"):
+        _validate_training_run(
+            tmp_path,
+            expected_method="lora_nf",
+            expected_model_id="publisher/instruct",
+            expected_seed=42,
+            expected_commit="training-sha",
+        )
+
+    report["training"]["losses"] = [1.25]
     report["metadata"]["seed"] = 43
     _write_json(tmp_path / "run_report.json", report)
     with pytest.raises(ValueError, match="mismatched training run"):

@@ -1,14 +1,19 @@
 import pytest
+import torch
 
 from llm_lora_nf.resource_guard import (
+    _numeric_visible_gpu_indices,
+    PARENT_MANAGED_GPU_BATCH_ENV,
     admitted_torch_device,
     decide_admission,
     parse_nvidia_smi_csv,
     project_file_lock,
+    project_gpu_lock,
 )
 from llm_lora_nf.result_metadata import (
     RunMetadata,
     require_formal_result,
+    tensor_difference_summary,
 )
 
 
@@ -27,6 +32,36 @@ def test_gpu_admission_uses_at_most_three_and_reserves_one():
     decision = decide_admission(statuses, requested=3)
     assert decision.mode == "gpu"
     assert decision.selected_gpu_indices == [0, 1, 2]
+
+
+def test_gpu_admission_respects_explicit_eligible_devices_and_global_reserve():
+    statuses = parse_nvidia_smi_csv(
+        "\n".join(
+            [
+                "0, 81920, 10, 0",
+                "1, 81920, 10, 0",
+                "2, 81920, 10, 0",
+                "3, 81920, 10, 0",
+            ]
+        )
+    )
+    decision = decide_admission(
+        statuses,
+        requested=2,
+        eligible_gpu_indices=[3, 1],
+    )
+    assert decision.selected_gpu_indices == [3, 1]
+    assert decision.idle_gpu_indices == [0, 1, 2, 3]
+
+
+def test_visible_gpu_parser_accepts_only_unique_physical_indices():
+    assert _numeric_visible_gpu_indices(None) is None
+    assert _numeric_visible_gpu_indices("") == []
+    assert _numeric_visible_gpu_indices("5, 2") == [5, 2]
+    with pytest.raises(RuntimeError, match="physical numeric"):
+        _numeric_visible_gpu_indices("GPU-uuid")
+    with pytest.raises(ValueError, match="duplicate"):
+        _numeric_visible_gpu_indices("2,2")
 
 
 def test_gpu_admission_rejects_more_than_three():
@@ -85,6 +120,16 @@ def test_project_file_lock_creates_only_the_exact_lock_file(tmp_path):
     assert list(tmp_path.iterdir()) == [lock_path]
 
 
+def test_parent_managed_gpu_batch_bypasses_duplicate_child_lock(
+    tmp_path,
+    monkeypatch,
+):
+    lock_path = tmp_path / "gpu.lock"
+    monkeypatch.setenv(PARENT_MANAGED_GPU_BATCH_ENV, "1")
+    with project_gpu_lock(str(lock_path)):
+        assert not lock_path.exists()
+
+
 def test_cpu_smoke_cannot_enter_formal_results():
     metadata = RunMetadata(
         run_id="smoke",
@@ -97,3 +142,18 @@ def test_cpu_smoke_cannot_enter_formal_results():
     assert not metadata.formal_result_eligible
     with pytest.raises(ValueError):
         require_formal_result(metadata)
+
+
+def test_tensor_difference_summary_records_initialization_drift():
+    reference = torch.tensor([0.0, 2.0])
+    candidate = torch.tensor([1.0, 0.0])
+    summary = tensor_difference_summary(reference, candidate)
+    assert summary["element_count"] == 2
+    assert summary["max_absolute_error"] == pytest.approx(2.0)
+    assert summary["mean_absolute_error"] == pytest.approx(1.5)
+    assert summary["rmse"] == pytest.approx(2.5**0.5)
+    assert summary["reference_rms"] == pytest.approx(2.0**0.5)
+    assert summary["relative_rmse"] == pytest.approx(1.25**0.5)
+
+    with pytest.raises(ValueError, match="finite"):
+        tensor_difference_summary(reference, torch.tensor([float("nan"), 0.0]))

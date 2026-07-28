@@ -110,15 +110,19 @@ def train_steps(
                 accumulated_loss.add_(outputs.loss.detach().float())
             micro_step += 1
             if micro_step % gradient_accumulation_steps == 0:
+                average_loss = float(
+                    (
+                        accumulated_loss / gradient_accumulation_steps
+                    ).item()
+                )
+                if not math.isfinite(average_loss):
+                    raise FloatingPointError(
+                        "Non-finite accumulated loss before optimizer step "
+                        f"{optimizer_steps + 1}"
+                    )
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-                losses.append(
-                    float(
-                        (
-                            accumulated_loss / gradient_accumulation_steps
-                        ).item()
-                    )
-                )
+                losses.append(average_loss)
                 accumulated_loss.zero_()
                 optimizer_steps += 1
                 if optimizer_steps >= max_steps:
@@ -161,6 +165,8 @@ def train_epochs(
     adam_epsilon: float = 1e-8,
     max_grad_norm: float = 1.0,
     max_steps: int = None,
+    progress_every_steps: int = 0,
+    progress_label: str = "",
 ) -> TrainingSummary:
     if epochs <= 0:
         raise ValueError("epochs must be positive")
@@ -176,6 +182,10 @@ def train_epochs(
         raise ValueError("adam_epsilon must be positive")
     if max_grad_norm < 0.0:
         raise ValueError("max_grad_norm must be non-negative")
+    if progress_every_steps < 0:
+        raise ValueError("progress_every_steps must be non-negative")
+    if "\n" in progress_label or "\r" in progress_label:
+        raise ValueError("progress_label must be a single line")
     parameters = [
         parameter for parameter in model.parameters() if parameter.requires_grad
     ]
@@ -274,16 +284,50 @@ def train_epochs(
                 (batch_index + 1) % effective_group_size == 0
             )
             if should_step:
+                average_loss = float(
+                    (accumulated_loss / effective_group_size).item()
+                )
+                if not math.isfinite(average_loss):
+                    raise FloatingPointError(
+                        "Non-finite accumulated loss before optimizer step "
+                        f"{optimizer_steps + 1}"
+                    )
                 if max_grad_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(parameters, max_grad_norm)
+                    try:
+                        torch.nn.utils.clip_grad_norm_(
+                            parameters,
+                            max_grad_norm,
+                            error_if_nonfinite=True,
+                        )
+                    except RuntimeError as error:
+                        raise FloatingPointError(
+                            "Non-finite gradient norm before optimizer step "
+                            f"{optimizer_steps + 1}"
+                        ) from error
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-                losses.append(
-                    float((accumulated_loss / effective_group_size).item())
-                )
+                losses.append(average_loss)
                 accumulated_loss.zero_()
                 optimizer_steps += 1
+                if (
+                    progress_every_steps > 0
+                    and (
+                        optimizer_steps % progress_every_steps == 0
+                        or optimizer_steps == total_steps
+                    )
+                ):
+                    print(
+                        "training_progress "
+                        f"run={progress_label or 'unnamed'} "
+                        f"steps={optimizer_steps}/{total_steps} "
+                        f"micro_steps={micro_step} "
+                        f"examples={examples} "
+                        f"supervised_tokens={supervised_tokens} "
+                        "zero_supervision_micro_batches="
+                        f"{zero_supervision_micro_batches}",
+                        flush=True,
+                    )
                 if optimizer_steps >= total_steps:
                     break
         if optimizer_steps >= total_steps:

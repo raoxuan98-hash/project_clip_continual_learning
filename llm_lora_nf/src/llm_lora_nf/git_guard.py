@@ -38,6 +38,14 @@ FORBIDDEN_PREFIXES = (
     "llm_lora_nf/artifacts/",
     "llm_lora_nf/calibration_cache/",
     "llm_lora_nf/request_cache/",
+    "llm_lora_nf/.venv",
+    "llm_lora_nf/model_cache/",
+    "llm_lora_nf/models_cache/",
+    "llm_lora_nf/hf_cache/",
+    "llm_lora_nf/modelscope_cache/",
+    "llm_lora_nf/.cache/",
+    "llm_lora_nf/output/",
+    "llm_lora_nf/results/",
 )
 FORBIDDEN_SUFFIXES = (
     ".safetensors",

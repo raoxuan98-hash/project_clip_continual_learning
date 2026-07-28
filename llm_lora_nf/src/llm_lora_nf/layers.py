@@ -71,7 +71,31 @@ class FilteredLoRALinear(nn.Module):
             torch.empty(self.out_features, 0, device=device, dtype=adapter_dtype),
         )
         self.register_buffer("merged", torch.tensor(False, device=device))
+        self._merged_python = False
         self.reset_lora_parameters()
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ) -> None:
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+        # Loading is cold-path code, so synchronize the persisted tensor once
+        # rather than calling ``merged.item()`` on every CUDA forward.
+        self._merged_python = bool(self.merged.detach().cpu().item())
 
     def reset_lora_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
@@ -122,12 +146,17 @@ class FilteredLoRALinear(nn.Module):
         lora_A: torch.Tensor,
         lora_B: torch.Tensor,
     ) -> None:
-        """Install an exact-function decomposition initialization.
+        """Install a numerically exact-function decomposition initialization.
 
-        The supplied factors define the initial adapter. Their scaled product is
-        subtracted from the frozen base weight, so base + adapter still equals
-        the original checkpoint at initialization. This is the common mechanism
-        used by LoRA-Null and MiLoRA, with different factor builders.
+        The official LoRA-Null/MiLoRA reparameterization subtracts the initial
+        low-rank product from the frozen base weight and adds the same product
+        through the adapter.  Performing those as separate deep-network
+        matmuls accumulates avoidable FP32 cancellation error.  We keep the
+        original base weight unchanged and represent the mathematically
+        identical update as ``B A - B_0 A_0`` instead.  At initialization the
+        two factor paths are bit-identical, so the adapter update is exactly
+        zero while gradients with respect to the trainable ``A`` and ``B`` are
+        unchanged.
         """
 
         if tuple(lora_A.shape) != tuple(self.lora_A.weight.shape):
@@ -150,11 +179,6 @@ class FilteredLoRALinear(nn.Module):
             device=self.lora_B.weight.device,
             dtype=self.lora_B.weight.dtype,
         )
-        base_delta = (offset_B @ offset_A).to(
-            device=self.base_layer.weight.device,
-            dtype=self.base_layer.weight.dtype,
-        )
-        self.base_layer.weight.sub_(self.scaling * base_delta)
         self.lora_A.weight.copy_(offset_A)
         self.lora_B.weight.copy_(offset_B)
         self.base_offset_A = offset_A.detach().clone()
@@ -168,14 +192,25 @@ class FilteredLoRALinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base = self.base_layer(x)
-        if bool(self.merged.item()):
+        if self._merged_python:
             return base
         adapter_input = self.adapter_input(x).to(dtype=self.lora_A.weight.dtype)
         adapter = self.lora_B(self.lora_A(adapter_input))
+        if self.has_base_offset:
+            initial_adapter = F.linear(
+                F.linear(adapter_input, self.base_offset_A),
+                self.base_offset_B,
+            )
+            adapter = adapter - initial_adapter
         return base + (self.scaling * adapter).to(dtype=base.dtype)
 
     def delta_weight(self) -> torch.Tensor:
         delta = self.lora_B.weight @ self.effective_lora_A()
+        if self.has_base_offset:
+            delta = delta - (
+                self.base_offset_B
+                @ self._effective_lora_A(self.base_offset_A)
+            )
         return self.scaling * delta
 
     def effective_lora_A(self) -> torch.Tensor:
@@ -187,7 +222,10 @@ class FilteredLoRALinear(nn.Module):
         without storing dense deltas or every historical filter basis.
         """
 
-        effective = self.lora_A.weight
+        return self._effective_lora_A(self.lora_A.weight)
+
+    def _effective_lora_A(self, factor: torch.Tensor) -> torch.Tensor:
+        effective = factor
         if self.use_filter and not self.filter.is_identity:
             basis = self.filter.protected_basis.to(
                 device=effective.device, dtype=effective.dtype
@@ -202,17 +240,19 @@ class FilteredLoRALinear(nn.Module):
 
     @torch.no_grad()
     def merge(self) -> None:
-        if bool(self.merged.item()):
+        if self._merged_python:
             return
         self.base_layer.weight.add_(self.delta_weight())
         self.merged.fill_(True)
+        self._merged_python = True
 
     @torch.no_grad()
     def unmerge(self) -> None:
-        if not bool(self.merged.item()):
+        if not self._merged_python:
             return
         self.base_layer.weight.sub_(self.delta_weight())
         self.merged.fill_(False)
+        self._merged_python = False
 
     @torch.no_grad()
     def merge_and_reset(self) -> None:
@@ -231,6 +271,7 @@ class FilteredLoRALinear(nn.Module):
             dtype=self.lora_B.weight.dtype,
         )
         self.merged.fill_(False)
+        self._merged_python = False
 
     def extra_repr(self) -> str:
         return (

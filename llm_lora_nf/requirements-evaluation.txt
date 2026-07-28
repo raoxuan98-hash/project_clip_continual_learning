@@ -1,5 +1,13 @@
 # Official evaluator locked by configs/evaluation/track_b_math_knowledge.yaml.
 lm_eval[hf,math] @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@6d642546f4688648fced259eb3302efd36ece5af
+# The evaluator's ``math`` extra leaves math-verify unpinned, and current
+# math-verify releases no longer expose its historical ``antlr4_11_0`` extra.
+# Keep the resolved parser stack explicit so Minerva/MATH task loading cannot
+# silently fail or drift between formal evaluation runs.
+sympy==1.13.1
+antlr4-python3-runtime==4.11.0
+math-verify==0.9.0
+latex2sympy2-extended==1.11.0
 # TRACE official-intent metrics. The evaluator implementation/commit is
 # recorded by trace_metrics.py; these runtime versions are locked separately.
 rouge==1.0.1

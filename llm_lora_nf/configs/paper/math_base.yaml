@@ -54,6 +54,8 @@ train:
   epochs: 1
   per_device_batch_size: 1
   global_batch_size: 128
+  dataloader_num_workers: 4
+  dataloader_prefetch_factor: 2
   optimizer: adamw
   adam_beta1: 0.9
   adam_beta2: 0.999

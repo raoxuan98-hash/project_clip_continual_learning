@@ -26,7 +26,10 @@ from llm_lora_nf.dataset_io import (
     official_lora_null_nq_character_spans,
 )
 from llm_lora_nf.environment import runtime_environment
-from llm_lora_nf.inject import count_parameters
+from llm_lora_nf.inject import (
+    audit_finite_trainable_parameters,
+    count_parameters,
+)
 from llm_lora_nf.integrity import (
     validate_directory_integrity,
     write_directory_integrity,
@@ -34,7 +37,10 @@ from llm_lora_nf.integrity import (
 from llm_lora_nf.model_io import load_instruct_model
 from llm_lora_nf.protocol_validation import validate_track_a_formal_config
 from llm_lora_nf.resource_guard import inspect_admission, project_gpu_lock
-from llm_lora_nf.result_metadata import RunMetadata
+from llm_lora_nf.result_metadata import (
+    RunMetadata,
+    tensor_difference_summary,
+)
 from llm_lora_nf.track_a import (
     TRACK_A_OFFICIAL_COMMIT,
     OfficialLoRANullCalibrator,
@@ -232,12 +238,28 @@ def _run(args: argparse.Namespace) -> None:
     )
     generator = torch.Generator().manual_seed(seed)
     training_collator = ResponseOnlyCollator(tokenizer.pad_token_id)
+    dataloader_workers = (
+        int(train_config["dataloader_num_workers"])
+        if execution_mode == "gpu_formal"
+        else 0
+    )
+    dataloader_options = {"num_workers": dataloader_workers}
+    if dataloader_workers > 0:
+        dataloader_options.update(
+            {
+                "prefetch_factor": int(
+                    train_config["dataloader_prefetch_factor"]
+                ),
+                "persistent_workers": True,
+            }
+        )
     training_batches = DataLoader(
         training_dataset,
         batch_size=int(train_config["per_device_batch_size"]),
         shuffle=True,
         generator=generator,
         collate_fn=training_collator,
+        **dataloader_options,
     )
     first_batch = training_collator([training_dataset[0]])
     data_seconds = time.monotonic() - data_started
@@ -298,6 +320,12 @@ def _run(args: argparse.Namespace) -> None:
         else {"atol": 2e-2, "rtol": 2e-2}
     )
     torch.testing.assert_close(initialized_logits, baseline_logits, **tolerance)
+    initialization_validation = {
+        **tensor_difference_summary(baseline_logits, initialized_logits),
+        "assert_close_atol": tolerance["atol"],
+        "assert_close_rtol": tolerance["rtol"],
+        "status": "passed",
+    }
 
     if bool(train_config.get("gradient_checkpointing", False)):
         if hasattr(model, "gradient_checkpointing_enable"):
@@ -331,6 +359,8 @@ def _run(args: argparse.Namespace) -> None:
         adam_epsilon=float(train_config["adam_epsilon"]),
         max_grad_norm=float(train_config["max_grad_norm"]),
         max_steps=max_steps,
+        progress_every_steps=25 if execution_mode == "gpu_formal" else 0,
+        progress_label=str(config["run"]["name"]),
     )
     if execution_mode == "gpu_formal":
         expected_training = {
@@ -352,6 +382,9 @@ def _run(args: argparse.Namespace) -> None:
                 "Formal Track A training budget drift: "
                 f"actual={actual_training}, expected={expected_training}"
             )
+    post_training_parameter_finiteness = audit_finite_trainable_parameters(
+        model
+    )
 
     metadata = RunMetadata(
         run_id=config["run"]["name"],
@@ -433,6 +466,7 @@ def _run(args: argparse.Namespace) -> None:
             "nq_sampling": "official_raw_character_spans",
         },
         "initialization": initialization,
+        "initialization_validation": initialization_validation,
         "parameters": count_parameters(model),
         "timing": {
             "data_seconds": data_seconds,
@@ -448,6 +482,9 @@ def _run(args: argparse.Namespace) -> None:
             ),
         },
         "training": training_summary.to_dict(),
+        "post_training_parameter_finiteness": (
+            post_training_parameter_finiteness
+        ),
         "checkpoint_integrity": checkpoint_integrity,
         "formal_result_eligible": execution_mode == "gpu_formal",
     }

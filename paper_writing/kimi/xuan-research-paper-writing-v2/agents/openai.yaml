@@ -1,4 +1,0 @@
-interface:
-  display_name: "Research Paper Writing v2"
-  short_description: "Stateful academic writing across drafting, revision, evidence updates, and claim rollback"
-  default_prompt: "Use $xuan-research-paper-writing-v2 to draft, revise, restructure, or repair my paper based on the current paper state, evidence state, and impacted sections."

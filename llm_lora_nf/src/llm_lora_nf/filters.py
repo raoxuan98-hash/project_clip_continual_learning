@@ -98,7 +98,11 @@ class HardLeakyFilter(nn.Module):
             raise ValueError(
                 f"Expected last dimension {self.input_dim}, got {x.shape[-1]}"
             )
-        if self.is_identity:
+        # Avoid ``leakage.item()`` in the training hot path: reading a CUDA
+        # scalar from Python would synchronize every adapted projection. A
+        # non-empty basis with leakage=1 remains exactly the identity through
+        # the factorized expression below.
+        if self.protected_dimension == 0:
             return x
         cached_input = (
             self._cached_input_ref()

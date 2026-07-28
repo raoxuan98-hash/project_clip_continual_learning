@@ -1,4 +1,6 @@
-from typing import Dict, Iterator, Tuple
+import hashlib
+import json
+from typing import Any, Dict, Iterable, Iterator, Tuple
 
 import torch
 import torch.nn as nn
@@ -115,3 +117,101 @@ def count_parameters(model: nn.Module) -> Dict[str, int]:
         parameter.numel() for parameter in model.parameters() if parameter.requires_grad
     )
     return {"total": total, "trainable": trainable}
+
+
+def audit_trainable_parameter_scope(
+    model: nn.Module,
+    *,
+    target_modules: Iterable[str],
+) -> Dict[str, Any]:
+    """Seal the exact trainable scope shared by native and PEFT adapters."""
+
+    expected_targets = tuple(str(target) for target in target_modules)
+    if not expected_targets or len(set(expected_targets)) != len(expected_targets):
+        raise ValueError("target_modules must be a non-empty unique sequence")
+    trainable = [
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    ]
+    if not trainable:
+        raise RuntimeError("Adapter model has no trainable parameters")
+
+    names = sorted(name for name, _ in trainable)
+    observed_targets = sorted(
+        {
+            target
+            for name in names
+            for target in expected_targets
+            if f".{target}." in f".{name}."
+        }
+    )
+    unexpected_names = [
+        name
+        for name in names
+        if not any(
+            f".{target}." in f".{name}."
+            for target in expected_targets
+        )
+    ]
+    missing_targets = sorted(set(expected_targets) - set(observed_targets))
+    if unexpected_names or missing_targets:
+        raise RuntimeError(
+            "Trainable adapter scope mismatch: "
+            f"unexpected={unexpected_names}, missing_targets={missing_targets}"
+        )
+
+    dtype_elements: Dict[str, int] = {}
+    dtype_tensors: Dict[str, int] = {}
+    for _, parameter in trainable:
+        dtype = str(parameter.dtype)
+        dtype_elements[dtype] = dtype_elements.get(dtype, 0) + parameter.numel()
+        dtype_tensors[dtype] = dtype_tensors.get(dtype, 0) + 1
+    encoded_names = json.dumps(
+        names,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "target_modules": list(expected_targets),
+        "observed_target_modules": observed_targets,
+        "trainable_tensor_count": len(trainable),
+        "trainable_parameter_count": sum(
+            parameter.numel() for _, parameter in trainable
+        ),
+        "trainable_dtype_elements": dict(sorted(dtype_elements.items())),
+        "trainable_dtype_tensors": dict(sorted(dtype_tensors.items())),
+        "trainable_parameter_names_sha256": hashlib.sha256(
+            encoded_names
+        ).hexdigest(),
+    }
+
+
+@torch.no_grad()
+def audit_finite_trainable_parameters(model: nn.Module) -> Dict[str, Any]:
+    """Reject a checkpoint if any trainable tensor contains NaN or infinity."""
+
+    trainable = [
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    ]
+    if not trainable:
+        raise RuntimeError("Adapter model has no trainable parameters")
+    non_finite = [
+        name
+        for name, parameter in trainable
+        if not bool(torch.isfinite(parameter.detach()).all().item())
+    ]
+    if non_finite:
+        raise FloatingPointError(
+            "Non-finite trainable parameters after training: "
+            + ", ".join(non_finite)
+        )
+    return {
+        "all_finite": True,
+        "checked_tensor_count": len(trainable),
+        "checked_parameter_count": sum(
+            parameter.numel() for _, parameter in trainable
+        ),
+    }

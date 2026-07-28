@@ -39,9 +39,11 @@ raoxuan@10.20.34.30
 /home/raoxuan/projects/project_clip_continual_learning_llm/llm_lora_nf
 ```
 
-No more than two GPUs may be used by this development line, and one GPU must be
-left unassigned at every admission decision. If CUDA is unavailable, only CPU smoke
-tests are permitted and their outputs must be marked `cpu_smoke_only`.
+No more than three GPUs may be used by this development line, and one GPU must be
+left unassigned at every admission decision. Each run remains single-GPU; the
+matrix launcher may schedule at most three runs on distinct physical devices.
+If CUDA is unavailable, only CPU smoke tests are permitted and their outputs
+must be marked `cpu_smoke_only`.
 
 Before each commit, stage only the intended code and run:
 
@@ -72,7 +74,13 @@ The main attention-only math protocol is split into explicit stages:
    binds model/data hashes, code commit, dtype, target scope, and protocol.
    The controlled LoRA baseline uses the pinned PEFT implementation; the
    project-native wrapper is reserved for methods whose decomposition or
-   runtime filter is not represented by ordinary PEFT LoRA.
+   runtime filter is not represented by ordinary PEFT LoRA. Formal training
+   rejects a non-finite accumulated loss or gradient norm before an optimizer
+   update, and rejects any non-finite trainable adapter tensor before saving.
+   Function-preserving decomposition methods keep the original frozen base
+   weight and evaluate the equivalent update `B @ A - B0 @ A0`; this makes the
+   initial adapter contribution exactly zero instead of relying on cancellation
+   between two deep-network matmuls.
 4. `scripts/export_merged.py` restores and merges either a native or PEFT adapter
    into a standard Hugging Face checkpoint. The primary comparison exports in
    FP32: BF16 matrix merging is not numerically identical to evaluating the
@@ -126,7 +134,9 @@ instances are never reused across an environment change.
 
 The locked evaluator is `lm-evaluation-harness` v0.4.12 at commit
 `6d642546f4688648fced259eb3302efd36ece5af`. Its optional dependencies are
-recorded separately in `requirements-evaluation.txt`.
+recorded separately in `requirements-evaluation.txt`. The Minerva/MATH parser
+stack is pinned there explicitly, including ANTLR 4.11, because the evaluator's
+unversioned `math` extra does not by itself provide a stable parser environment.
 
 The code-task extension uses the complete 104,848-row Python CodeFeedback split
 published with PiSSA. `prepare_code_training_data.py` binds its HF-Mirror

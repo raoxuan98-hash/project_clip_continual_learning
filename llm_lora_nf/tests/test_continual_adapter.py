@@ -19,7 +19,11 @@ from llm_lora_nf.continual_adapter import (
     update_continual_moment_map,
 )
 from llm_lora_nf.filters import HardLeakyFilter
-from llm_lora_nf.inject import adapter_modules, inject_attention_adapters
+from llm_lora_nf.inject import (
+    adapter_modules,
+    audit_trainable_parameter_scope,
+    inject_attention_adapters,
+)
 
 
 class TinyAttention(nn.Module):
@@ -264,3 +268,25 @@ def test_peft_state_stack_reconstructs_multiple_task_merges(method):
         rtol=1e-5,
     )
     assert not hasattr(rebuilt, "peft_config")
+
+
+def test_peft_lora_explicitly_promotes_bf16_adapter_parameters_to_fp32():
+    model_config = LlamaConfig(
+        vocab_size=32,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        max_position_embeddings=32,
+    )
+    model = LlamaForCausalLM(model_config).to(dtype=torch.bfloat16)
+    config = AdapterConfig(method="lora", rank=2, alpha=2, dropout=0.0)
+    model = build_peft_baseline(model, config, "lora")
+    audit = audit_trainable_parameter_scope(
+        model,
+        target_modules=config.target_modules,
+    )
+    assert audit["trainable_dtype_elements"] == {
+        "torch.float32": audit["trainable_parameter_count"]
+    }

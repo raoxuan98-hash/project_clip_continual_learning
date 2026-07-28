@@ -73,9 +73,49 @@ git rev-parse HEAD
 PYTHONPATH=src "$LLM_PY" -m pytest -q
 ```
 
-Track A 数值安全截断、Track B 保留回答截断和监督覆盖审计加入后的
-服务器结果为 `157 passed`。
-只有当前 commit 的完整结果可以写入新记录；不得沿用旧测试计数。
+服务器的 `llm_lora_nf/` 目录同时包含被 Git 忽略的虚拟环境、数据审计副本
+和运行时文件，因此源码同步必须使用明确文件白名单：
+
+- 禁止对整个 `llm_lora_nf/` 使用带 `--delete` 的 `rsync`；
+- 禁止覆盖正在被 launcher 或 runner 读取的源文件；
+- 先用 `rsync -naci` 对同一白名单 dry-run，确认只出现预期源码文件；
+- 正式传输不带 `--delete`，保留相对目录，再用远程 `git diff --check`、
+  `git status --short` 和 payload guard 审计；
+- 当前 Track A 完成前不进行任何正式树同步。其后的并发批次只同步
+  `configs/paper/math_base.yaml`、`math_track_a_llama3p2_3b.yaml`，
+  `scripts/{launch_math_matrix,run_sft,run_track_a_sft}.py`，
+  `src/llm_lora_nf/{baselines,inject,protocol_validation,resource_guard,training}.py`
+  及对应六个测试文件；文档单独按文件同步。
+
+本分支还从原 CLIP 历史继承了 406 个已 tracked 的 history/paper 文件。
+它们的路径清单 SHA-256 为
+`89fc45f7b39d8a53cf25321aa19c26a2a4391efb427ce95c8ac1ede0b782b375`，
+index stage 清单 SHA-256 为
+`bbc329e6cab0c68cf978d495275ef098fd509f7f749567e7d4e5bbe9c2302251`
+，总字节数 `11,029,722`。Track A 训练与评测封存前禁止改变 HEAD；
+封存后先复核上述 count/hash，再只对
+`chat-history/`、`chat-history-for-paper-writing/` 和 `paper_writing/`
+执行 `git rm -r --cached`。必须确认本地文件仍存在、staged 内容只有
+index 删除和本批白名单代码，再提交；不得对这些目录执行文件系统删除。
+
+2026-07-28 的 detached `ef69d35` 演练结果：操作前 tracked 406、操作后
+tracked 0、staged deletion 406、全部 staged change 406、工作树缺失文件
+0；staged 路径 SHA-256 为
+`89fc45f7b39d8a53cf25321aa19c26a2a4391efb427ce95c8ac1ede0b782b375`。
+三个目录均命中 `.gitignore`。临时 worktree 已回收，正式工作树保持 clean
+`ef69d3543f5b6500eeb229610665de62181f9a3a`。正式 index 清理仍只能在
+Track A 训练与评测证据封存后执行。
+
+旧 `ef69d35` 正式树在 Track A LoRA 完成时的结果为 `157 passed`；
+LoRA-Null 暴露函数保持参数化的 FP32 舍入缺陷后，等价
+\(BA-B_0A_0\) 修复、评测 parser 依赖、并发 launcher、可观测性和
+固定 generation batch 8 已在 `/tmp` 隔离副本完成
+`184 passed, 3 warnings`。该版本还在
+optimizer step 前硬拒绝非有限 accumulated loss/gradient norm，并在保存
+checkpoint 前逐项验证全部 trainable adapter 参数有限。旧 base 的
+batch-auto partial evidence 已封存；候选通过 payload guard 并提交后，
+必须在同一新 commit 上重跑 Track A LoRA、LoRA-Null 与 base。不得把
+旧训练/评测产物拼入新 commit 的正式比较。
 
 ## 3. 模型与数据
 
@@ -139,9 +179,26 @@ python scripts/check_resources.py --requested 1
 
 ## 5. 正式 stage 顺序
 
-每个 training launcher 都串行运行，并由项目级 training-pipeline lock
-阻止两个矩阵进程并发写同一批输出；每个任务内重新执行 GPU 准入，单 run
-使用一张 GPU，始终至少留空一张。
+每个 training launcher 由项目级 training-pipeline lock 阻止两个矩阵进程
+并发写同一批输出。launcher 可用 `--max-parallel 1..3` 启动多个互不相同的
+单 GPU run；父进程在整个 batch 生命周期持有全局 GPU 锁，先按全局空闲
+状态保留至少一张卡，再给每个子进程设置唯一物理
+`CUDA_VISIBLE_DEVICES`。子进程跳过重复加锁但会再次执行准入；独立 runner
+仍被父进程的全局锁排除。若空闲卡不足，
+当前 batch 自动缩小，绝不通过复用同一卡满足并发数。单 run 仍只写一个
+最终 adapter。
+
+正式 GPU 数据流水固定 `dataloader_num_workers=4`、
+`dataloader_prefetch_factor=2` 和 persistent workers；CPU smoke 强制
+`num_workers=0`。服务器测试证明 worker 0/2 的 seed 42 sampler 顺序完全
+一致，并用真实 Llama tokenizer + MetaMathQA 通过了双 worker formatter/
+prefetch 链路。
+
+数学/知识 lm-eval 的 FP32 generation batch size 固定为 `8`。不得改回
+`auto`：2026-07-28 的 Llama-3.2-3B 实测中，`auto` 退化为 batch 1，
+23,373 请求约 3.9 秒/请求；batch 8 在 GSM8K 32 题和 Minerva-MATH
+16 题探针中均无 OOM，分别约 1.06 和 1.49 秒/请求。探针带 `limit`，
+只用于吞吐与显存准入，不作为论文结果。
 
 ### 5.1 Track A gate
 
@@ -165,7 +222,8 @@ Track B 则由正式配置门禁固定 `left_preserve_response`，两者不能�
 python scripts/launch_math_matrix.py \
   --matrix configs/paper/math_matrix.yaml \
   --stage track_a_gate \
-  --output-root "$TRAIN_ROOT"
+  --output-root "$TRAIN_ROOT" \
+  --max-parallel 2
 ```
 
 随后评测：
@@ -192,7 +250,8 @@ python scripts/launch_math_evaluation.py \
 python scripts/launch_math_matrix.py \
   --matrix configs/paper/math_matrix.yaml \
   --stage protocol_gate \
-  --output-root "$TRAIN_ROOT"
+  --output-root "$TRAIN_ROOT" \
+  --max-parallel 3
 
 python scripts/launch_math_evaluation.py \
   --matrix configs/paper/math_matrix.yaml \
@@ -210,7 +269,8 @@ python scripts/launch_math_evaluation.py \
 ### 5.3 主矩阵
 
 只有 protocol gate 达到预注册门槛后，才执行 `main`，命令与上节相同，
-把两处 `protocol_gate` 改为 `main`。
+把两处 `protocol_gate` 改为 `main`；训练 launcher 继续使用
+`--max-parallel 3`。
 
 ### 5.4 代码任务训练与分离评测
 
@@ -220,7 +280,8 @@ python scripts/launch_math_evaluation.py \
 "$LLM_PY" scripts/launch_sft_matrix.py \
   --matrix configs/paper/code_matrix.yaml \
   --stage protocol_gate \
-  --output-root "$TRAIN_ROOT/code"
+  --output-root "$TRAIN_ROOT/code" \
+  --max-parallel 3
 ```
 
 正式评测使用可恢复的低存储 launcher。它逐个执行 FP32 导出、GPU 生成和

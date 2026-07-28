@@ -8,6 +8,20 @@ LLM 开发必须与当前 CLIP 代码隔离。目标已经用户批准；后续�
 2026-07-27 用户将全局 GPU 上限由 2 张调整为 3 张；每次准入至少留出
 1 张真正空闲 GPU、无可用 GPU 时仅远程 CPU 跑链路的规则不变。当前
 单个 TRACE runner 仍只请求 1 张卡，提高上限不会自动扩大单 run 占用。
+正式 SFT matrix launcher 支持最多 3 个互异单 GPU run 并发；父子双重
+准入始终按全局空闲状态保留至少一张卡，空闲不足时自动缩小 batch。
+待提交 Track B runner 还会硬审计实际可训练参数仅位于 attention
+`q/k/v/o`，要求 PEFT/native adapter 均为 FP32，并在 optimizer step
+前拒绝非有限 loss/梯度、保存前拒绝非有限 adapter 参数；隔离副本完整
+回归为 `184 passed, 3 warnings`。真实 tiny Llama 已逐一构建 LoRA、DoRA、PiSSA
+和 CorDA，验证目标作用域、adapter dtype 与初始化函数保持；native
+LoRA-Null、MiLoRA、LoRA-NF 由同一回归集覆盖。数学与代码主矩阵展开后
+也分别验证为 2 模型 × 7 方法 × 3 seed，且每个模型只有一个 normalized
+comparison hash。
+
+Git 上传边界同时由 `.gitignore` 和 staged payload allowlist 防护：
+`.venv*`、history、论文、LLM records、模型/HF 缓存、数据、output/results
+即使被强制 staged 也会被拒绝。
 
 ## 当前状态
 
@@ -45,7 +59,9 @@ TRACE-500 归档已通过 24 个 split 的逐文件行数、schema 与 SHA-256
 等价测试均已通过，未引入八份阶段模型 checkpoint。TRACE 的数据读取、
 Instruct chat 转换、确定性生成、八任务指标兼容层、三角任务×时间聚合和
 连续训练 runner、状态消融编排和 token 长度审计也已接通；当前服务器
-完整回归为 `157 passed`。长度审计进一步定位到早期训练编码的
+正式工作树完整回归为 `157 passed`；后续 3-GPU 有界并发与训练进度日志
+在不接触正式树的 `/tmp` 隔离副本中为 `166 passed`，并通过真实 Llama
+tokenizer/MetaMathQA 双 worker 预取检查。长度审计进一步定位到早期训练编码的
 右截断与 TRACE 官方左截断不一致：官方 LoRA 协议仍是
 `1024 prompt + 512 answer = 1536` combined limit，但从左侧截断以保留
 回答。修复及全量长度审计已通过，不再把极长 MeetingBank prompt 误解为
@@ -113,6 +129,11 @@ GPU 0 并留空 GPU 5，完成完整 LoRA-NF 校准、一步训练、确定性�
 - [`records/2026-07-27-03-trace-state-selection.md`](records/2026-07-27-03-trace-state-selection.md)：combined-left 修复后的八任务状态消融、完整性哈希、低存储回收和 `reference_fixed` 选择结果。
 - [`records/2026-07-27-04-trace-four-method-pilot.md`](records/2026-07-27-04-trace-four-method-pilot.md)：LoRA/DoRA/LoRA-Null/LoRA-NF 同协议 TRACE-500 pilot、负面结果和后续单次滤波强度诊断决策。
 - [`records/2026-07-27-05-trace-filter-ablation.md`](records/2026-07-27-05-trace-filter-ablation.md)：唯一一次预注册滤波强度消融、门限选择、数据来源续查和停止调参决策。
+- [`records/2026-07-27-06-track-a-truncation-audit.md`](records/2026-07-27-06-track-a-truncation-audit.md)：Track A 官方右截断语义、10 万样本监督覆盖和训练日程修复审计。
+- [`records/2026-07-27-07-eval-manifest-and-parallel-launcher.md`](records/2026-07-27-07-eval-manifest-and-parallel-launcher.md)：正式评测数据 manifest 修复、最多三卡有界并发与多 worker 数据流水准备。
+- [`records/2026-07-28-01-track-a-long-run-monitor.md`](records/2026-07-28-01-track-a-long-run-monitor.md)：Track A 长时训练活性、共享基线排队状态及并行锁语义复核。
+- [`records/2026-07-28-02-completion-evidence-matrix.md`](records/2026-07-28-02-completion-evidence-matrix.md)：主目标完成条件、证据状态与剩余实验矩阵。
+- [`records/2026-07-28-03-track-a-lora-completion-audit.md`](records/2026-07-28-03-track-a-lora-completion-audit.md)：旧提交 LoRA 完成审计、LoRA-Null 数值修复、评测依赖与 batch 吞吐修正。
 
 ## 文档边界
 

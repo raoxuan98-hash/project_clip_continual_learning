@@ -45,7 +45,11 @@ from llm_lora_nf.dataset_io import (
     sample_nq_questions,
 )
 from llm_lora_nf.environment import runtime_environment
-from llm_lora_nf.inject import count_parameters
+from llm_lora_nf.inject import (
+    audit_finite_trainable_parameters,
+    audit_trainable_parameter_scope,
+    count_parameters,
+)
 from llm_lora_nf.integrity import (
     validate_directory_integrity,
     write_directory_integrity,
@@ -57,7 +61,10 @@ from llm_lora_nf.method_registry import (
 )
 from llm_lora_nf.protocol_validation import validate_track_b_formal_config
 from llm_lora_nf.resource_guard import inspect_admission, project_gpu_lock
-from llm_lora_nf.result_metadata import RunMetadata
+from llm_lora_nf.result_metadata import (
+    RunMetadata,
+    tensor_difference_summary,
+)
 from llm_lora_nf.track_a import OfficialLoRANullAttentionCalibrator
 from llm_lora_nf.training import set_reproducible_seed, train_epochs
 
@@ -280,12 +287,28 @@ def _run(args: argparse.Namespace) -> None:
     )
     generator = torch.Generator().manual_seed(seed)
     training_collator = ResponseOnlyCollator(tokenizer.pad_token_id)
+    dataloader_workers = (
+        int(train_config["dataloader_num_workers"])
+        if execution_mode == "gpu_formal"
+        else 0
+    )
+    dataloader_options = {"num_workers": dataloader_workers}
+    if dataloader_workers > 0:
+        dataloader_options.update(
+            {
+                "prefetch_factor": int(
+                    train_config["dataloader_prefetch_factor"]
+                ),
+                "persistent_workers": True,
+            }
+        )
     training_batches = DataLoader(
         training_dataset,
         batch_size=int(train_config["per_device_batch_size"]),
         shuffle=True,
         generator=generator,
         collate_fn=training_collator,
+        **dataloader_options,
     )
     first_batch = training_collator([training_dataset[0]])
     data_seconds = time.monotonic() - data_started
@@ -608,6 +631,17 @@ def _run(args: argparse.Namespace) -> None:
     else:
         raise ValueError(f"Unsupported adapter method: {adapter_config.method}")
     adapter_setup_seconds = time.monotonic() - adapter_setup_started
+    trainable_parameter_audit = audit_trainable_parameter_scope(
+        model,
+        target_modules=adapter_config.target_modules,
+    )
+    if execution_mode == "gpu_formal" and set(
+        trainable_parameter_audit["trainable_dtype_elements"]
+    ) != {"torch.float32"}:
+        raise RuntimeError(
+            "Formal method comparison requires FP32 adapter parameters; "
+            f"got {trainable_parameter_audit['trainable_dtype_elements']}"
+        )
     if moments is not None:
         del moments
         gc.collect()
@@ -619,6 +653,12 @@ def _run(args: argparse.Namespace) -> None:
     if device.type == "cuda":
         tolerance = {"atol": 2e-2, "rtol": 2e-2}
     torch.testing.assert_close(initialized_logits, baseline_logits, **tolerance)
+    initialization_validation = {
+        **tensor_difference_summary(baseline_logits, initialized_logits),
+        "assert_close_atol": tolerance["atol"],
+        "assert_close_rtol": tolerance["rtol"],
+        "status": "passed",
+    }
 
     if bool(train_config.get("gradient_checkpointing", False)):
         if hasattr(model, "gradient_checkpointing_enable"):
@@ -652,6 +692,8 @@ def _run(args: argparse.Namespace) -> None:
         adam_epsilon=float(train_config["adam_epsilon"]),
         max_grad_norm=float(train_config["max_grad_norm"]),
         max_steps=max_steps,
+        progress_every_steps=25 if execution_mode == "gpu_formal" else 0,
+        progress_label=str(config["run"]["name"]),
     )
     if execution_mode == "gpu_formal":
         expected_training = {
@@ -673,6 +715,18 @@ def _run(args: argparse.Namespace) -> None:
                 "Formal training budget drift: "
                 f"actual={actual_training}, expected={expected_training}"
             )
+    if (
+        training_summary.trainable_parameters
+        != trainable_parameter_audit["trainable_parameter_count"]
+    ):
+        raise RuntimeError(
+            "Trainable parameter identity changed during training: "
+            f"before={trainable_parameter_audit['trainable_parameter_count']}, "
+            f"trainer={training_summary.trainable_parameters}"
+        )
+    post_training_parameter_finiteness = audit_finite_trainable_parameters(
+        model
+    )
 
     metadata = RunMetadata(
         run_id=config["run"]["name"],
@@ -749,6 +803,8 @@ def _run(args: argparse.Namespace) -> None:
             "response_only_loss": True,
         },
         "initialization": initialization,
+        "initialization_validation": initialization_validation,
+        "trainable_parameter_audit": trainable_parameter_audit,
         "calibration_cache": calibration_cache_record,
         "parameters": count_parameters(model),
         "timing": {
@@ -771,6 +827,9 @@ def _run(args: argparse.Namespace) -> None:
             ),
         },
         "training": training_summary.to_dict(),
+        "post_training_parameter_finiteness": (
+            post_training_parameter_finiteness
+        ),
         "checkpoint_integrity": checkpoint_integrity,
         "filter_summary": {
             group: {

@@ -26,6 +26,7 @@ ENV/
 env/
 .venv
 .venv_gpu/
+.venv*/
 .env
 
 # IDEs and editors
@@ -140,6 +141,13 @@ llm_lora_nf/calibration_cache/
 calibration_cache/
 llm_lora_nf/request_cache/
 request_cache/
+llm_lora_nf/model_cache/
+llm_lora_nf/models_cache/
+llm_lora_nf/hf_cache/
+llm_lora_nf/modelscope_cache/
+llm_lora_nf/.cache/
+llm_lora_nf/output/
+llm_lora_nf/results/
 
 # Model weights, datasets, archives, and large binary artifacts
 *.safetensors

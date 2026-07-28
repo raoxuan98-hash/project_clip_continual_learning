@@ -1,8 +1,0 @@
-\section{Discussion}
-We propose a parameter-efficient training framework to boost the continual learning of vision language models. We employ MoE-Adapters to help the CLIP model to adapt efficiently and generalize well on all tasks. 
-Moreover, we introduce a Distribution Discriminative Auto-Selector (DDAS) to assign inference data automatically to either MoE-Adapters or the frozen CLIP.  
-Extensive experimental results in various settings demonstrate the superiority of our method over previous arts in terms of classification accuracy and training efficiency. 
-
-One limitation of our framework is that the proposed DDAS requires a predefined threshold to determine downstream branches for all tasks. With the growth of task numbers, adapting all tasks with a single threshold would bring errors. Besides, incorporating the learned knowledge to improve the zero-shot transfer ability of the original CLIP is a future research direction.
-
-\noindent{\textbf{Acknowledgement.} This work was supported by National Key R\&D Program of China under Grant 2021YFA0715202, National Natural Science Foundation of China under Grant 62206039 and 62293544, the Fundamental Research Funds for the Central Universities, and CCF-Baidu Open Fund (no. CCF-Baidu202314).}

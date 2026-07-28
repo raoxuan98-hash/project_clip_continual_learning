@@ -72,6 +72,33 @@ def test_merge_and_unmerge_preserve_output():
     torch.testing.assert_close(before, after, atol=1e-6, rtol=1e-5)
 
 
+def test_merged_state_load_restores_python_hot_path_flag():
+    layer = _make_layer().eval()
+    x = torch.randn(4, 9)
+    expected = layer(x)
+    layer.merge()
+    state = copy.deepcopy(layer.state_dict())
+
+    restored = _make_layer().eval()
+    restored.load_state_dict(state)
+    assert restored._merged_python
+    torch.testing.assert_close(restored(x), expected, atol=1e-6, rtol=1e-5)
+    restored.unmerge()
+    torch.testing.assert_close(restored(x), expected, atol=1e-6, rtol=1e-5)
+
+
+def test_native_forward_hot_path_never_reads_tensor_scalar(monkeypatch):
+    layer = _make_layer()
+    x = torch.randn(2, 3, 9)
+
+    def reject_item(_tensor):
+        raise AssertionError("Tensor.item() is forbidden in the forward hot path")
+
+    monkeypatch.setattr(torch.Tensor, "item", reject_item)
+    output = layer(x)
+    assert output.shape == (2, 3, 7)
+
+
 def test_optimizer_step_matches_dense_filter_reference():
     layer = _make_layer()
     reference = copy.deepcopy(layer)
@@ -133,6 +160,7 @@ def test_decomposition_initialization_preserves_original_function():
     torch.manual_seed(29)
     base = nn.Linear(8, 6)
     original = copy.deepcopy(base)
+    original_weight = base.weight.detach().clone()
     layer = FilteredLoRALinear(
         base,
         rank=3,
@@ -144,8 +172,39 @@ def test_decomposition_initialization_preserves_original_function():
     lora_B = torch.randn(6, 3) * 0.1
     layer.set_decomposition_initialization(lora_A, lora_B)
     x = torch.randn(5, 8)
-    torch.testing.assert_close(layer(x), original(x), atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(layer(x), original(x), atol=0.0, rtol=0.0)
+    torch.testing.assert_close(
+        layer.base_layer.weight,
+        original_weight,
+        atol=0.0,
+        rtol=0.0,
+    )
+    assert torch.count_nonzero(layer.delta_weight()) == 0
     assert layer.has_base_offset
+
+
+def test_decomposition_merge_uses_current_minus_initial_factors():
+    torch.manual_seed(30)
+    base = nn.Linear(8, 6)
+    layer = FilteredLoRALinear(
+        base,
+        rank=3,
+        alpha=3,
+        dropout=0.0,
+        use_filter=False,
+    )
+    initial_A = torch.randn(3, 8) * 0.1
+    initial_B = torch.randn(6, 3) * 0.1
+    layer.set_decomposition_initialization(initial_A, initial_B)
+    with torch.no_grad():
+        layer.lora_A.weight.add_(0.02)
+        layer.lora_B.weight.sub_(0.03)
+    x = torch.randn(5, 8)
+    expected = layer(x)
+    layer.merge()
+    torch.testing.assert_close(layer(x), expected, atol=1e-6, rtol=1e-5)
+    layer.unmerge()
+    torch.testing.assert_close(layer(x), expected, atol=1e-6, rtol=1e-5)
 
 
 def test_bf16_base_uses_fp32_trainable_adapters():

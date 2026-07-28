@@ -1,9 +1,15 @@
+import pytest
 import torch
 import torch.nn as nn
 
 from llm_lora_nf.calibration import ActivationCalibrator, build_and_assign_filters
 from llm_lora_nf.config import AdapterConfig
-from llm_lora_nf.inject import adapter_modules, inject_attention_adapters
+from llm_lora_nf.inject import (
+    adapter_modules,
+    audit_finite_trainable_parameters,
+    audit_trainable_parameter_scope,
+    inject_attention_adapters,
+)
 from llm_lora_nf.layers import FilteredLoRALinear
 
 
@@ -70,6 +76,55 @@ def test_injection_is_attention_only():
     }
     assert trainable_names
     assert all("lora_A" in name or "lora_B" in name for name in trainable_names)
+    audit = audit_trainable_parameter_scope(
+        model,
+        target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
+    )
+    assert audit["observed_target_modules"] == [
+        "k_proj",
+        "o_proj",
+        "q_proj",
+        "v_proj",
+    ]
+    assert audit["trainable_parameter_count"] == sum(
+        parameter.numel()
+        for parameter in model.parameters()
+        if parameter.requires_grad
+    )
+    assert audit["trainable_dtype_elements"] == {
+        "torch.float32": audit["trainable_parameter_count"]
+    }
+    assert len(audit["trainable_parameter_names_sha256"]) == 64
+
+
+def test_trainable_scope_audit_rejects_non_attention_parameters():
+    model = TinyModel()
+    inject_attention_adapters(
+        model,
+        AdapterConfig(method="lora_nf", rank=2, alpha=2),
+    )
+    model.lm_head.weight.requires_grad_(True)
+    with pytest.raises(RuntimeError, match="scope mismatch"):
+        audit_trainable_parameter_scope(
+            model,
+            target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
+        )
+
+
+def test_finite_parameter_audit_rejects_corrupted_adapter():
+    model = TinyModel()
+    inject_attention_adapters(
+        model,
+        AdapterConfig(method="lora_nf", rank=2, alpha=2),
+    )
+    audit = audit_finite_trainable_parameters(model)
+    assert audit["all_finite"]
+    assert audit["checked_tensor_count"] == 8
+
+    with torch.no_grad():
+        model.self_attn.q_proj.lora_A.weight[0, 0] = torch.nan
+    with pytest.raises(FloatingPointError, match="q_proj.lora_A"):
+        audit_finite_trainable_parameters(model)
 
 
 def test_calibration_shares_qkv_and_masks_padding():

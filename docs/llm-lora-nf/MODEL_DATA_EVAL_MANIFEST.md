@@ -113,6 +113,12 @@ o_proj
 - 样本：按 LoRA-Null 官方顺序取前 100,000 条；
 - checkpoint：Instruct；
 - loss：只在 assistant response token 上计算；
+- 数值门控：每个 optimizer step 前要求 accumulated loss 与 gradient norm
+  有限，保存前要求全部 trainable adapter tensor 有限；任何失败均禁止
+  生成正式 checkpoint；
+- 初始化证据：除固定 `assert_close` 门控外，每个 run 还封存 initialized
+  logits 相对同一 base logits 的 max/mean absolute error、RMSE、reference
+  RMS 和 relative RMSE；数学与代码评测入口会重新验证这些量均为有限值；
 - Track B 训练编码固定 `left_preserve_response`：先渲染完整 Instruct
   chat，再从左侧裁到 512 token，以优先保留 assistant response；正式配置
   门禁拒绝回退到 tokenizer 默认右截断；
@@ -184,6 +190,9 @@ Track B 只统一 attention-only 目标范围与训练预算，不把 LoRA-Null 
   `Python/NumPy/Torch/few-shot = 0/1234/1234/1234`；
 - Qwen3 `enable_thinking=false`；
 - primary merged checkpoint 使用 FP32；
+- generation batch size 固定为 `8`，不使用会在 Llama-3.2-3B 上保守
+  退化为 batch 1 的 `auto`；GSM8K 与 Minerva-MATH 的服务器探针均已
+  验证该批大小在 24 GiB GPU 上可运行；
 - formal run 禁止 task override、`limit` 和 CPU 输出。
 
 数据 revision：
@@ -522,6 +531,9 @@ forgetting 至多 `0.0787988`、TRACE-BWT 至少 `-0.0514489`。
 - 同 checkpoint、rank、alpha、dropout、数据、预算和 evaluator；
 - 方法特定 calibration 允许存在，但单独报告成本；
 - 同 rank 主表 + 近似同参数量补充表。
+- 每个正式 run 在训练前封存实际可训练参数作用域、FP32 dtype element/
+  tensor 计数和排序参数名 SHA-256；作用域外参数、缺失任一 `q/k/v/o`
+  目标或非 FP32 adapter 均在训练前失败。
 
 ## 10. 基线来源锁定
 
@@ -560,6 +572,8 @@ signed-global-max normalization 和 FP32 covariance。其额外耗时和峰值�
 - calibration cache 按内容寻址跨 seeds 复用；
 - Track B 标准 LoRA 直接使用锁定的 PEFT 实现；native wrapper 只承担
   LoRA-NF、LoRA-Null 与 MiLoRA 所需的运行时滤波/分解语义；
+- PEFT 路径显式设置 `autocast_adapter_dtype=True`，与 native FP32
+  adapter 相同；runner 以实际参数审计而不是实现默认值作为正式证据；
 - CorDA 首次校准的 per-run eigens/covariance 临时文件在共享 artifact
   cache 写入且复核 SHA-256 后精确回收，不随每个 seed 重复长期保留；
 - lm-eval request cache 按基础 snapshot、evaluator/task/data/protocol

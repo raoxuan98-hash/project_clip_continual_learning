@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +12,12 @@ import yaml
 from llm_lora_nf.artifact_retention import validate_artifact_retention
 from llm_lora_nf.config_io import load_yaml_config
 from llm_lora_nf.integrity import validate_directory_integrity
-from llm_lora_nf.resource_guard import project_file_lock
+from llm_lora_nf.resource_guard import (
+    DEFAULT_GPU_LOCK_PATH,
+    PARENT_MANAGED_GPU_BATCH_ENV,
+    inspect_admission,
+    project_file_lock,
+)
 
 
 def _git_commit(repo_root: Path) -> str:
@@ -85,14 +91,53 @@ def _completed_formal_run(
     return completed
 
 
+def _write_launcher_manifest(
+    output_root: Path,
+    *,
+    stage: str,
+    runner: str,
+    matrix_path: Path,
+    source_commit: str,
+    max_parallel: int,
+    jobs,
+) -> Dict[str, Any]:
+    manifest = {
+        "format_version": 2,
+        "stage": stage,
+        "runner": runner,
+        "matrix": str(matrix_path),
+        "source_commit": source_commit,
+        "max_parallel": max_parallel,
+        "jobs": jobs,
+    }
+    (output_root / "launcher_manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def _main_locked() -> None:
     parser = argparse.ArgumentParser(
-        description="Serial, resumable launcher for a locked SFT matrix"
+        description=(
+            "Bounded-parallel, resumable launcher for a locked SFT matrix"
+        )
     )
     parser.add_argument("--matrix", required=True)
     parser.add_argument("--stage", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument(
+        "--max-parallel",
+        type=int,
+        default=1,
+        help=(
+            "Concurrent single-GPU runs (1-3); admission still reserves at "
+            "least one globally idle GPU"
+        ),
+    )
     args = parser.parse_args()
+    if args.max_parallel < 1 or args.max_parallel > 3:
+        raise ValueError("max_parallel must lie in [1, 3]")
 
     matrix_path = Path(args.matrix).resolve()
     matrix = _load(matrix_path)
@@ -112,14 +157,20 @@ def _main_locked() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     config_root = matrix_path.parent
     jobs = []
+    pending_jobs = []
 
     for model_key in stage["models"]:
         model_spec = matrix["models"][model_key]
         model_config = load_yaml_config(
             str((config_root / model_spec["config"]).resolve())
         )
-        for method in stage["methods"]:
-            for seed in stage["seeds"]:
+        # Seed-major ordering lets the first seed materialize any shared
+        # content-addressed calibration cache before later seeds reach the
+        # same method. It also prevents three seeds of one expensive
+        # calibration method from redundantly computing the same cache in one
+        # parallel batch.
+        for seed in stage["seeds"]:
+            for method in stage["methods"]:
                 output_dir = output_root / model_key / method / f"seed_{seed}"
                 run_name = f"{args.stage}_{model_key}_{method}_seed{seed}"
                 if _completed_formal_run(
@@ -207,60 +258,89 @@ def _main_locked() -> None:
                         )
                 record = {
                     "run_name": run_name,
-                    "status": "running",
+                    "status": "queued",
                     "output_dir": str(output_dir),
                     "command": command,
+                    "expected_method": method,
+                    "expected_model_id": str(model_config["model"]["id"]),
+                    "expected_seed": int(seed),
                 }
                 jobs.append(record)
-                manifest = {
-                    "format_version": 1,
-                    "stage": args.stage,
-                    "runner": runner,
-                    "matrix": str(matrix_path),
-                    "source_commit": source_commit,
-                    "jobs": jobs,
-                }
-                (output_root / "launcher_manifest.json").write_text(
-                    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8",
+                pending_jobs.append(record)
+
+    manifest = _write_launcher_manifest(
+        output_root,
+        stage=args.stage,
+        runner=runner,
+        matrix_path=matrix_path,
+        source_commit=source_commit,
+        max_parallel=args.max_parallel,
+        jobs=jobs,
+    )
+    while pending_jobs:
+        with project_file_lock(DEFAULT_GPU_LOCK_PATH):
+            requested = min(args.max_parallel, len(pending_jobs))
+            admission = inspect_admission(requested=requested)
+            if admission.mode != "gpu" or not admission.selected_gpu_indices:
+                raise RuntimeError(
+                    "No formal GPU batch can start while reserving one idle "
+                    f"GPU: {admission.reason}"
                 )
-                completed = subprocess.run(command, check=False)
-                record["returncode"] = completed.returncode
+            selected = admission.selected_gpu_indices
+            batch = pending_jobs[: len(selected)]
+            processes = []
+            for record, physical_gpu in zip(batch, selected):
+                child_environment = os.environ.copy()
+                child_environment["CUDA_VISIBLE_DEVICES"] = str(physical_gpu)
+                child_environment[PARENT_MANAGED_GPU_BATCH_ENV] = "1"
+                record["selected_physical_gpu"] = physical_gpu
+                record["status"] = "running"
+                process = subprocess.Popen(
+                    record["command"],
+                    env=child_environment,
+                )
+                record["pid"] = process.pid
+                processes.append((record, process))
+            manifest = _write_launcher_manifest(
+                output_root,
+                stage=args.stage,
+                runner=runner,
+                matrix_path=matrix_path,
+                source_commit=source_commit,
+                max_parallel=args.max_parallel,
+                jobs=jobs,
+            )
+            batch_failed = False
+            for record, process in processes:
+                returncode = process.wait()
+                record["returncode"] = returncode
                 record["status"] = (
-                    "completed" if completed.returncode == 0 else "failed"
+                    "completed" if returncode == 0 else "failed"
                 )
-                if completed.returncode == 0 and not _completed_formal_run(
-                    output_dir,
-                    expected_method=method,
-                    expected_model_id=str(model_config["model"]["id"]),
-                    expected_seed=int(seed),
+                if returncode == 0 and not _completed_formal_run(
+                    Path(record["output_dir"]),
+                    expected_method=str(record["expected_method"]),
+                    expected_model_id=str(record["expected_model_id"]),
+                    expected_seed=int(record["expected_seed"]),
                     expected_commit=source_commit,
                 ):
                     record["status"] = "failed_artifact_validation"
                     record["returncode"] = 1
-                    completed = subprocess.CompletedProcess(
-                        completed.args,
-                        returncode=1,
-                    )
-                (output_root / "launcher_manifest.json").write_text(
-                    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8",
+                if record["returncode"] != 0:
+                    batch_failed = True
+                manifest = _write_launcher_manifest(
+                    output_root,
+                    stage=args.stage,
+                    runner=runner,
+                    matrix_path=matrix_path,
+                    source_commit=source_commit,
+                    max_parallel=args.max_parallel,
+                    jobs=jobs,
                 )
-                if completed.returncode != 0:
-                    raise SystemExit(completed.returncode)
+        if batch_failed:
+            raise SystemExit(1)
+        pending_jobs = pending_jobs[len(batch) :]
 
-    manifest = {
-        "format_version": 1,
-        "stage": args.stage,
-        "runner": runner,
-        "matrix": str(matrix_path),
-        "source_commit": source_commit,
-        "jobs": jobs,
-    }
-    (output_root / "launcher_manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
     print(json.dumps(manifest, indent=2, sort_keys=True))
 
 

@@ -35,7 +35,7 @@ metrics:
   webqs: exact_match,none
 
 runtime:
-  batch_size: auto
+  batch_size: 8
   max_batch_size: 8
   dtype: float32
   log_samples: true

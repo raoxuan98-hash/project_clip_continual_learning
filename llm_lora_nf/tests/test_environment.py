@@ -67,6 +67,23 @@ def test_code_evaluation_versions_match_requirements_file():
         assert pins[package] == version
 
 
+def test_math_evaluation_parser_stack_is_explicitly_locked():
+    requirements = (
+        Path(__file__).resolve().parents[1]
+        / "requirements-evaluation.txt"
+    ).read_text(encoding="utf-8")
+    pins = {
+        name.replace("_", "-").lower(): version
+        for line in requirements.splitlines()
+        if line and not line.startswith("#") and "==" in line
+        for name, version in [line.split("==", 1)]
+    }
+    assert pins["sympy"] == "1.13.1"
+    assert pins["antlr4-python3-runtime"] == "4.11.0"
+    assert pins["math-verify"] == "0.9.0"
+    assert pins["latex2sympy2-extended"] == "1.11.0"
+
+
 def test_software_environment_identity_excludes_machine_local_paths():
     record = {
         "python": "3.10.20",

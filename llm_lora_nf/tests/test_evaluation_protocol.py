@@ -51,6 +51,13 @@ def test_locked_formal_evaluation_config_rejects_evaluator_seed_drift():
         validate_formal_evaluation_config(config)
 
 
+def test_locked_formal_evaluation_config_rejects_batch_size_drift():
+    config = copy.deepcopy(_config())
+    config["runtime"]["batch_size"] = "auto"
+    with pytest.raises(ValueError, match="runtime.batch_size"):
+        validate_formal_evaluation_config(config)
+
+
 def test_evaluation_data_manifest_binds_actual_cache_files(tmp_path):
     config = _config()
     hf_home = tmp_path / "hf_home"

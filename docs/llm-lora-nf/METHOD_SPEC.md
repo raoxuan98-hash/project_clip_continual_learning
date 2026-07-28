@@ -1,8 +1,9 @@
 # LLM LoRA-NF 方法规范
 
 **版本**: 0.4
-**日期**: 2026-07-26
-**状态**: Phase -1 审计完成；当前批服务器完整测试 `157 passed`，正式数值证据仍须来自干净 commit 的 GPU 实验
+**日期**: 2026-07-28
+**状态**: Phase -1 审计完成；当前隔离副本完整测试
+`184 passed, 3 warnings`，正式数值证据仍须来自干净 commit 的 GPU 实验
 **审计来源**:
 
 - `meta-prompts/2026-07-12-02-作者对Lora_nsp的理解.md`
@@ -238,6 +239,19 @@ W_{\mathrm{eff}}=W+sBAP.
 基座输出 dtype。否则 native BF16 adapter 与 PEFT FP32 adapter 会形成未声明
 的优化精度差异。
 
+Track B runner 在初始化后、训练前执行统一的可训练参数硬审计：
+
+- 每个可训练参数名必须位于 `q_proj/k_proj/v_proj/o_proj` 之一；
+- 四个目标必须全部实际出现；
+- PEFT 显式启用 `autocast_adapter_dtype=True`，正式运行只接受 FP32
+  adapter 参数；
+- 报告封存可训练 tensor/element 数、按 dtype 计数和排序参数名
+  SHA-256；
+- trainer 返回的可训练参数数必须与训练前封存值完全相同。
+
+因此 attention-only 与优化精度不只由 YAML 声明，还由每个正式运行的实际
+模型参数状态证明。DoRA 的 magnitude 参数仍计入审计和单独参数量报告。
+
 ## 8. 单任务知识保持协议
 
 第一轮 SFT 前，使用 256 条 NQ Open calibration 样本构建 reference second moment 和 \(U_{\mathrm{prot}}\)。
@@ -287,6 +301,18 @@ attention-only 约束。q/k/v 与 gate/up 的输入完全相同，统一封装�
 adapter-only checkpoint 能从原始 FP32 checkpoint 精确重建。该数值稳定化
 必须在 Track A 报告中披露，并通过同 checkpoint/seed/evaluator 的差异门控，
 不表述为官方代码的逐位复现。
+
+对 LoRA-Null/MiLoRA 的函数保持重参数化，记初始化因子为
+\(A_0,B_0\)。官方写法把 \(\alpha B_0A_0/r\) 从冻结 base weight 中减去，
+再由当前 adapter 加回。实现使用严格数学等价的
+\[
+W_0+\frac{\alpha}{r}(BA-B_0A_0)
+\]
+形式，保持原始 \(W_0\) 不变。这样初始化时两个因子路径逐元素相同，
+adapter 增量在 FP32 中精确为零，避免深层模型把两个独立 dense matmul 的
+舍入误差累积到 logits。对 \(A,B\) 的训练梯度、merge 后的有效权重和
+checkpoint 重放均与减 base weight 的写法相同；merge 与累计 factor stack
+必须显式减去保存的 \(B_0A_0\)。
 
 官方 MetaMathQA formatter 对 source 与 source+target 分别执行 512 token
 右截断，再按截断后的 source 长度 mask labels。若 source 自身占满窗口，

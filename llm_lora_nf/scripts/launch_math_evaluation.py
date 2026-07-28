@@ -5,6 +5,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -178,6 +179,53 @@ def _validate_training_run(
         str(training_dir / "checkpoint"),
         expected_kind="adapter_checkpoint",
     )
+    training = run_report.get("training")
+    parameters = run_report.get("parameters")
+    finiteness = run_report.get("post_training_parameter_finiteness")
+    initialization_validation = run_report.get("initialization_validation")
+    losses = training.get("losses") if isinstance(training, dict) else None
+    initialization_metrics = (
+        (
+            initialization_validation.get("max_absolute_error"),
+            initialization_validation.get("mean_absolute_error"),
+            initialization_validation.get("rmse"),
+            initialization_validation.get("reference_rms"),
+            initialization_validation.get("relative_rmse"),
+        )
+        if isinstance(initialization_validation, dict)
+        else ()
+    )
+    if (
+        not isinstance(training, dict)
+        or not isinstance(parameters, dict)
+        or not isinstance(finiteness, dict)
+        or not isinstance(initialization_validation, dict)
+        or initialization_validation.get("status") != "passed"
+        or len(initialization_metrics) != 5
+        or not all(
+            isinstance(value, (int, float))
+            and math.isfinite(float(value))
+            and float(value) >= 0.0
+            for value in initialization_metrics
+        )
+        or not isinstance(losses, list)
+        or int(training.get("steps", 0)) <= 0
+        or len(losses) != int(training.get("steps", 0))
+        or not all(
+            isinstance(loss, (int, float)) and math.isfinite(float(loss))
+            for loss in losses
+        )
+        or int(training.get("supervised_tokens", 0)) <= 0
+        or not finiteness.get("all_finite")
+        or int(finiteness.get("checked_parameter_count", -1))
+        != int(training.get("trainable_parameters", -2))
+        or int(finiteness.get("checked_parameter_count", -1))
+        != int(parameters.get("trainable", -3))
+        or int(finiteness.get("checked_tensor_count", 0)) <= 0
+    ):
+        raise ValueError(
+            f"Training run lacks qualified finite numerical evidence: {training_dir}"
+        )
     recorded_integrity = run_report.get("checkpoint_integrity", {})
     if (
         checkpoint_integrity["manifest_sha256"]

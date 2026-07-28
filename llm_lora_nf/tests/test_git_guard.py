@@ -61,3 +61,22 @@ def test_payload_guard_rejects_calibration_cache_and_small_weight_file():
     )
     assert sum("forbidden artifact extension" in item for item in violations) == 3
     assert sum("forbidden path" in item for item in violations) == 2
+
+
+def test_payload_guard_rejects_all_local_research_and_runtime_trees():
+    entries = [
+        PayloadEntry("chat-history-for-paper-writing/story.md", 8),
+        PayloadEntry("paper_writing/paper-template/paper_draft.tex", 8),
+        PayloadEntry("docs/llm-lora-nf/records/private.md", 8),
+        PayloadEntry("llm_lora_nf/.venv-broken-20260725/bin/python", 8),
+        PayloadEntry("llm_lora_nf/model_cache/model/config.json", 8),
+        PayloadEntry("llm_lora_nf/hf_cache/datasets/cache.json", 8),
+        PayloadEntry("llm_lora_nf/output/run/report.json", 8),
+        PayloadEntry("llm_lora_nf/results/table.json", 8),
+    ]
+    violations = validate_payload(entries)
+    assert sum("forbidden path" in item for item in violations) == len(entries)
+    assert sum(
+        "outside allowed LLM code payload" in item
+        for item in violations
+    ) == len(entries)

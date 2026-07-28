@@ -1,15 +1,23 @@
 import copy
 
+import pytest
 import torch
+from transformers import LlamaConfig, LlamaForCausalLM
 
 from llm_lora_nf.baselines import (
     _scaled_factors_from_projected_weight,
+    build_corda_baseline,
     build_native_adapter,
+    build_peft_baseline,
 )
 from llm_lora_nf.calibration import ActivationCalibrator, build_and_assign_filters
 from llm_lora_nf.checkpoint import load_native_adapter, save_native_adapter
 from llm_lora_nf.config import AdapterConfig
-from llm_lora_nf.inject import adapter_modules, merge_native_adapters
+from llm_lora_nf.inject import (
+    adapter_modules,
+    audit_trainable_parameter_scope,
+    merge_native_adapters,
+)
 from llm_lora_nf.layers import FilteredLoRALinear
 from llm_lora_nf.method_registry import (
     TRACK_B_DIRECT_PEFT_METHODS,
@@ -27,6 +35,20 @@ def _batch():
     }
 
 
+def _tiny_llama():
+    return LlamaForCausalLM(
+        LlamaConfig(
+            vocab_size=32,
+            hidden_size=8,
+            intermediate_size=16,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            max_position_embeddings=32,
+        )
+    )
+
+
 def test_controlled_lora_baseline_routes_to_pinned_peft():
     assert "lora" in TRACK_B_DIRECT_PEFT_METHODS
     assert "lora" in TRACK_B_PEFT_METHODS
@@ -41,6 +63,80 @@ def test_controlled_lora_baseline_routes_to_pinned_peft():
         "corda",
         "lora_nf",
     }
+
+
+@pytest.mark.parametrize("method", ["lora", "dora", "pissa"])
+@torch.no_grad()
+def test_direct_peft_baselines_are_fp32_attention_only_and_function_preserving(
+    method,
+):
+    torch.manual_seed(37)
+    model = _tiny_llama()
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    baseline = model(input_ids=input_ids).logits
+    config = AdapterConfig(method=method, rank=2, alpha=2, dropout=0.0)
+    model = build_peft_baseline(model, config, method)
+    audit = audit_trainable_parameter_scope(
+        model,
+        target_modules=config.target_modules,
+    )
+    assert audit["observed_target_modules"] == [
+        "k_proj",
+        "o_proj",
+        "q_proj",
+        "v_proj",
+    ]
+    assert audit["trainable_dtype_elements"] == {
+        "torch.float32": audit["trainable_parameter_count"]
+    }
+    torch.testing.assert_close(
+        model(input_ids=input_ids).logits,
+        baseline,
+        atol=2e-4,
+        rtol=2e-4,
+    )
+
+
+@torch.no_grad()
+def test_corda_baseline_is_fp32_attention_only_and_function_preserving(
+    tmp_path,
+):
+    torch.manual_seed(39)
+    model = _tiny_llama()
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    baseline = model(input_ids=input_ids).logits
+    config = AdapterConfig(method="corda", rank=2, alpha=2, dropout=0.0)
+
+    def run_calibration():
+        model(input_ids=input_ids)
+
+    model = build_corda_baseline(
+        model,
+        config,
+        run_calibration=run_calibration,
+        cache_file=str(tmp_path / "corda_eigens.pt"),
+        covariance_file=str(tmp_path / "corda_covariance.pt"),
+        mode="kpm",
+    )
+    audit = audit_trainable_parameter_scope(
+        model,
+        target_modules=config.target_modules,
+    )
+    assert audit["observed_target_modules"] == [
+        "k_proj",
+        "o_proj",
+        "q_proj",
+        "v_proj",
+    ]
+    assert audit["trainable_dtype_elements"] == {
+        "torch.float32": audit["trainable_parameter_count"]
+    }
+    torch.testing.assert_close(
+        model(input_ids=input_ids).logits,
+        baseline,
+        atol=2e-4,
+        rtol=2e-4,
+    )
 
 
 def test_lora_null_initialization_preserves_checkpoint_function():

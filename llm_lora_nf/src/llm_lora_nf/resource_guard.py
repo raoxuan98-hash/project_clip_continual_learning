@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 
+DEFAULT_GPU_LOCK_PATH = "/tmp/llm_lora_nf_gpu.lock"
+PARENT_MANAGED_GPU_BATCH_ENV = "LLM_LORA_NF_PARENT_MANAGED_GPU_BATCH"
+
+
 @dataclass(frozen=True)
 class GPUStatus:
     index: int
@@ -65,6 +69,7 @@ def decide_admission(
     reserve_idle: int = 1,
     max_memory_used_mb: int = 512,
     max_utilization_percent: int = 5,
+    eligible_gpu_indices: Optional[Iterable[int]] = None,
 ) -> AdmissionDecision:
     if requested < 0 or requested > 3:
         raise ValueError("requested must be between 0 and 3")
@@ -78,6 +83,19 @@ def decide_admission(
             max_utilization_percent=max_utilization_percent,
         )
     ]
+    eligible = (
+        None
+        if eligible_gpu_indices is None
+        else [int(index) for index in eligible_gpu_indices]
+    )
+    if eligible is not None and len(eligible) != len(set(eligible)):
+        raise ValueError("Eligible GPU indices contain duplicates")
+    idle_set = set(idle)
+    eligible_idle = (
+        idle
+        if eligible is None
+        else [index for index in eligible if index in idle_set]
+    )
     if requested == 0:
         return AdmissionDecision(
             mode="cpu_smoke_only",
@@ -87,8 +105,16 @@ def decide_admission(
                 "no GPUs requested; CPU smoke reserves every currently idle GPU"
             ),
         )
-    allowed = max(0, min(requested, 3, len(idle) - reserve_idle))
-    selected = idle[:allowed]
+    allowed = max(
+        0,
+        min(
+            requested,
+            3,
+            len(idle) - reserve_idle,
+            len(eligible_idle),
+        ),
+    )
+    selected = eligible_idle[:allowed]
     if selected:
         return AdmissionDecision(
             mode="gpu",
@@ -104,6 +130,22 @@ def decide_admission(
     )
 
 
+def _numeric_visible_gpu_indices(value: Optional[str]) -> Optional[List[int]]:
+    if value is None:
+        return None
+    if not value.strip():
+        return []
+    tokens = [token.strip() for token in value.split(",")]
+    if not all(token.isdigit() for token in tokens):
+        raise RuntimeError(
+            "CUDA_VISIBLE_DEVICES must contain physical numeric GPU indices"
+        )
+    indices = [int(token) for token in tokens]
+    if len(indices) != len(set(indices)):
+        raise ValueError("CUDA_VISIBLE_DEVICES contains duplicate GPU indices")
+    return indices
+
+
 def inspect_admission(requested: int = 3) -> AdmissionDecision:
     try:
         statuses = query_gpu_status()
@@ -114,7 +156,13 @@ def inspect_admission(requested: int = 3) -> AdmissionDecision:
             idle_gpu_indices=[],
             reason=f"GPU query unavailable: {error}",
         )
-    return decide_admission(statuses, requested=requested)
+    return decide_admission(
+        statuses,
+        requested=requested,
+        eligible_gpu_indices=_numeric_visible_gpu_indices(
+            os.environ.get("CUDA_VISIBLE_DEVICES")
+        ),
+    )
 
 
 def admitted_torch_device(
@@ -168,7 +216,14 @@ def project_file_lock(path: str):
 
 @contextmanager
 def project_gpu_lock(
-    path: str = "/tmp/llm_lora_nf_gpu.lock",
+    path: str = DEFAULT_GPU_LOCK_PATH,
 ):
+    if os.environ.get(PARENT_MANAGED_GPU_BATCH_ENV) == "1":
+        # A bounded-parallel matrix parent holds the same global lock for the
+        # lifetime of the whole child batch and assigns each child one unique
+        # physical CUDA_VISIBLE_DEVICES entry. Re-acquiring here would
+        # deadlock/serialize those already protected children.
+        yield
+        return
     with project_file_lock(path):
         yield

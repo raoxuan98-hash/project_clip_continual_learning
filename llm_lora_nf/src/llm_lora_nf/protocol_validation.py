@@ -96,6 +96,8 @@ def _validate_common_sft_training(
     _expect(config, "train.epochs", 1)
     _expect(config, "train.per_device_batch_size", 1)
     _expect(config, "train.global_batch_size", 128)
+    _expect(config, "train.dataloader_num_workers", 4)
+    _expect(config, "train.dataloader_prefetch_factor", 2)
     _expect_float(config, "train.adam_beta1", 0.9)
     _expect_float(config, "train.adam_beta2", 0.999)
     _expect_float(config, "train.adam_epsilon", 1e-8)
@@ -298,7 +300,7 @@ def validate_formal_evaluation_config(config: Mapping[str, Any]) -> None:
         "webqs": "exact_match,none",
     }
     _expect(config, "metrics", locked_metrics)
-    _expect(config, "runtime.batch_size", "auto")
+    _expect(config, "runtime.batch_size", 8)
     _expect(config, "runtime.max_batch_size", 8)
     _expect(config, "runtime.dtype", "float32")
     _expect(config, "runtime.log_samples", True)
