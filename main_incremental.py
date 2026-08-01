@@ -199,12 +199,22 @@ def _build_text_classifier(args, model, processor, frozen_model, global_class_na
                            frozen_classifier=None):
     if args.text_classifier_mode == "current":
         return get_zeroshot_classifier(model, processor, global_class_names, device)
-    if args.text_classifier_mode != "lada_hybrid":
+    if args.text_classifier_mode not in ("lada_hybrid", "lada_hybrid_refresh"):
         raise ValueError(f"Unsupported text_classifier_mode: {args.text_classifier_mode}")
 
     if frozen_classifier is None:
         frozen_classifier = get_zeroshot_classifier(
             frozen_model, processor, global_class_names, device)
+    if args.text_classifier_mode == "lada_hybrid_refresh":
+        # Refresh 变体：已见类用当前阶段编码器重新编码，未见类保持 frozen。
+        if cached_seen_text_features is None or cached_seen_text_features.numel() == 0:
+            return frozen_classifier
+        seen_count = cached_seen_text_features.shape[0]
+        refreshed = get_zeroshot_classifier(
+            model, processor, global_class_names[:seen_count], device)
+        hybrid = frozen_classifier.clone()
+        hybrid[:, :seen_count] = refreshed
+        return hybrid / hybrid.norm(dim=0, keepdim=True)
     if cached_seen_text_features is None or cached_seen_text_features.numel() == 0:
         return frozen_classifier
     seen_count = cached_seen_text_features.shape[0]
@@ -475,13 +485,13 @@ def parse_args():
                         help="List of all ID datasets (for reference).")
     parser.add_argument("--root", type=str, default="/data1/open_datasets/X-TAIL",
                         help="Root directory of the dataset.")
-    parser.add_argument("--model_name", type=str,
-                        default=os.environ.get("CLIP_MODEL_NAME", "openai/clip-vit-base-patch16"),
-                        help="Hugging Face dual-encoder checkpoint (hub id or local dir). "
-                             "Defaults to the CLIP_MODEL_NAME env var; the supported "
-                             "robustness backbone is google/siglip2-base-patch16-224.")
     parser.add_argument("--num_shots", type=int, default=16,
                         help="Number of shots for few-shot learning.")
+    parser.add_argument("--eval_resize_mode", type=str, default="legacy_square",
+                        choices=["legacy_square", "preserve_aspect"],
+                        help="Deterministic X-TAIL classification-test preprocessing. "
+                             "legacy_square reproduces previous runs; preserve_aspect uses "
+                             "standard CLIP Resize(shorter_edge)+CenterCrop. Retrieval preprocessing is unchanged.")
     parser.add_argument("--full_shot", action="store_true", default=False,
                         help="Use full dataset instead of few-shot (overrides --num_shots).")
     parser.add_argument("--batch_size", type=int, default=32,
@@ -617,10 +627,6 @@ def parse_args():
                         help="Divergence form for cross-modal distillation.")
     parser.add_argument("--cd_temperature", type=float, default=4.0,
                         help="Temperature for cross-modal distillation soft labels.")
-    parser.add_argument("--cd_direction", type=str, default="bidir",
-                        choices=["bidir", "i2t_only"],
-                        help="CD 方向：bidir=0.5*(I2T+T2I)（main_v3 修复后行为）；"
-                             "i2t_only=仅 image->text 单向无缩放（v2 旧行为，用于 A/B 对照）。")
     parser.add_argument("--aux_weight", type=float, default=0.0,
                         help="Weight for auxiliary linear classifier loss (0=disabled). "
                              "Adds a linear head on features during training to improve "
@@ -706,11 +712,17 @@ def parse_args():
                              "step artifacts for offline classifier sweeps. The active --num_centers "
                              "is always included. Default 1,4 enables the default offline sweep.")
     parser.add_argument("--text_classifier_mode", type=str, default="lada_hybrid",
-                        choices=["current", "lada_hybrid"],
+                        choices=["current", "lada_hybrid", "lada_hybrid_refresh"],
                         help="Text classifier used at evaluation. lada_hybrid (default) uses cached "
                              "tuned text prototypes for seen classes and frozen CLIP zero-shot features "
-                             "for unseen classes. current encodes all classes with the current adapted "
-                             "text encoder.")
+                             "for unseen classes. lada_hybrid_refresh re-encodes seen classes with the "
+                             "current adapted text encoder at every stage (unseen stay frozen). "
+                             "current encodes all classes with the current adapted text encoder.")
+    parser.add_argument("--wiseft_lambda", type=float, default=1.0,
+                        help="WiSE-FT style interpolation applied after each task's LoRA merge: "
+                             "W <- W0 + lambda * (W - W0), where W0 is the frozen pretrained weight. "
+                             "1.0 (default) disables it; values < 1.0 pull the adapted model toward "
+                             "the pretrained base to recover zero-shot transfer.")
 
     # LADA 分类器参数（用于与 LR-RGDA 对比）
     parser.add_argument("--enable_lada", action="store_true", default=True,
@@ -866,7 +878,7 @@ def main(args):
     eval_bs = args.eval_batch_size if args.eval_batch_size is not None else args.batch_size
     for task_datasets in args.dataset_sequence:
         d_name = task_datasets[0]
-        _, test_transform = get_transforms(d_name, model_name=args.model_name)
+        _, test_transform = get_transforms(d_name, model_name=os.environ.get("CLIP_MODEL_NAME"), test_resize_mode=args.eval_resize_mode)
         _, _, te_loader, c_names = get_xtail_trainloader(
             root=args.root, dataset_name=d_name,
             transform_train=None, transform_test=test_transform,
@@ -877,7 +889,7 @@ def main(args):
 
     # 预计算 frozen CLIP 的零样本分类器（lada_hybrid 模式下复用）
     frozen_zeroshot_classifier = None
-    if args.text_classifier_mode == "lada_hybrid":
+    if args.text_classifier_mode in ("lada_hybrid", "lada_hybrid_refresh"):
         _RUN_TIMER.start("build_frozen_zs_classifier")
         frozen_zeroshot_classifier = get_zeroshot_classifier(
             trainer.model_pretrain, processor, global_class_names, args.device)
@@ -914,7 +926,7 @@ def main(args):
         train_loaders = []
         task_class_names = []
         for d_name in task_datasets:
-            train_transform, test_transform = get_transforms(d_name, model_name=args.model_name)
+            train_transform, test_transform = get_transforms(d_name, model_name=os.environ.get("CLIP_MODEL_NAME"), test_resize_mode=args.eval_resize_mode)
             num_shots = 0 if args.full_shot else args.num_shots
             tr_loader, _, _, c_names = get_xtail_trainloader(
                 root=args.root, dataset_name=d_name,
@@ -925,9 +937,10 @@ def main(args):
             task_class_names.extend(c_names)
 
         merged_dataset = ConcatDataset([loader.dataset for loader in train_loaders])
-        # 用于提取协方差的 loader 不打乱顺序
+        # 用于提取协方差的 loader 不打乱顺序；full-shot 下数据量巨大，使用更大 batch 加速
+        cov_batch_size = max(args.batch_size, 128)
         cov_loader = DataLoader(
-            merged_dataset, batch_size=args.batch_size, shuffle=False,
+            merged_dataset, batch_size=cov_batch_size, shuffle=False,
             num_workers=args.num_workers, pin_memory=True,
             persistent_workers=args.num_workers > 0)
         merged_loader = DataLoader(
@@ -1046,7 +1059,7 @@ def main(args):
 
         _RUN_TIMER.stop("nsp_and_merge")
 
-        if args.text_classifier_mode == "lada_hybrid":
+        if args.text_classifier_mode in ("lada_hybrid", "lada_hybrid_refresh"):
             task_text_features = _encode_text_classifier_columns(
                 model, processor, task_class_names, args.device)
             cached_seen_text_features = (
@@ -1071,7 +1084,7 @@ def main(args):
         label_offset = sum(len(c_names) for c_names in history_class_names)
 
         for d_name in task_datasets:
-            train_transform, test_transform = get_transforms(d_name, model_name=args.model_name)
+            train_transform, test_transform = get_transforms(d_name, model_name=os.environ.get("CLIP_MODEL_NAME"), test_resize_mode=args.eval_resize_mode)
             tr_loader, tr4update, _, c_names = get_xtail_trainloader(
                 root=args.root, dataset_name=d_name,
                 transform_train=train_transform, transform_test=test_transform,
@@ -1325,9 +1338,7 @@ def main(args):
                 ds_root = retrieval_roots.get(ds_name, args.retrieval_root)
                 if ds_name not in main._retrieval_datasets_cache:
                     try:
-                        ds = load_retrieval_dataset(
-                            ds_name, ds_root, args.retrieval_max_images,
-                            model_name=args.model_name)
+                        ds = load_retrieval_dataset(ds_name, ds_root, args.retrieval_max_images)
                         main._retrieval_datasets_cache[ds_name] = ds
                     except FileNotFoundError as e:
                         logging.warning("Skipping retrieval dataset %s at %s: %s", ds_name, ds_root, e)
