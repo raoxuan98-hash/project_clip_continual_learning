@@ -13,7 +13,7 @@
 | W1 | 16-shot 主表 + 消融 + 敏感性 | **27/27 完成** |
 | W2 | SigLIP2 LoRA-NF / LADA seed42/43 | **4/4 完成** |
 | W3 | LADA 16-shot 复现 seed42/43 | **2/2 完成** |
-| W4 | full-shot（LoRA-NF / LoRA-only × 2 seed） | **2/4 运行中**（LoRA-NF seed42/43） |
+| W4 | full-shot（LoRA-NF / LoRA-only × 2 seed） | **2/4 运行中**（LoRA-NF seed42/43 健康运行，seed43 已至 Task 2/10） |
 | W5 | B0 零样本 + retrieval | 未开始，supervisor 最后自动调度 |
 
 > **说明**：同 backbone 下仅换用 LADA 分类器的 full-shot 复现，已按用户指示跳过（2026-08-01），直接保留 LoRA-NF 与 LoRA-only 的 full-shot。
@@ -41,7 +41,7 @@
 | LoRA+CD（无 NSP） | 61.38 | 72.45 | 82.74 | 三项均低于 LADA |
 | LoRA-only | 60.92 | 67.10 | 75.47 | 大幅低于 LADA |
 
-> **结论**：在新协议下，LoRA-NF（CD+NSP）以极微弱优势同时超过同管线复现的 LADA（T/A/L 分别 +0.01/+0.02/+0.05）。所有消融变体均不如完整 LoRA-NF，说明 NSP+CD 的组合是必要的。
+> **结论**：在新协议下，LoRA-NF（CD+NSP）以极微弱优势同时超过同管线复现的 LADA（T/A/L 分别 +0.01/+0.02/+0.05）。所有消融变体均不如完整 LoRA-NF，说明 NSP+CD 的组合是必要的。本表数字已通过 `scripts/aggregate_pa_results.py` 重新聚合验证。
 
 ### 关键观察
 
