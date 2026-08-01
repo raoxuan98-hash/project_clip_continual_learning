@@ -13,7 +13,7 @@
 | W1 | 16-shot 主表 + 消融 + 敏感性 | **27/27 完成** |
 | W2 | SigLIP2 LoRA-NF / LADA seed42/43 | **4/4 完成** |
 | W3 | LADA 16-shot 复现 seed42/43 | **2/2 完成** |
-| W4 | full-shot（LoRA-NF / LoRA-only × 2 seed） | **2/4 运行中**（LoRA-NF seed42/43 已完成 Task 5 训练，正在抽取协方差 / RGDA / eval / retrieval） |
+| W4 | full-shot（LoRA-NF / LoRA-only × 2 seed） | **2/4 运行中**（full-shot 共 10 task；seed42 已进入 Task 6/10，seed43 完成 Task 5 的 RGDA 拟合、即将进入 Task 6；每 task 约 15 min） |
 | W5 | B0 零样本 + retrieval | 未开始，supervisor 最后自动调度 |
 
 > **说明**：同 backbone 下仅换用 LADA 分类器的 full-shot 复现，已按用户指示跳过（2026-08-01），直接保留 LoRA-NF 与 LoRA-only 的 full-shot。
@@ -42,6 +42,8 @@
 | LoRA-only | 60.92 | 67.10 | 75.47 | 大幅低于 LADA |
 
 > **结论**：在新协议下，LoRA-NF（CD+NSP）以极微弱优势同时超过同管线复现的 LADA（T/A/L 分别 +0.01/+0.02/+0.05）。所有消融变体均不如完整 LoRA-NF，说明 NSP+CD 的组合是必要的。本表数字已通过 `scripts/aggregate_pa_results.py` 重新聚合验证。
+>
+> **W4 时间预期**：full-shot 实际为 10 task（而非 5 task），每 task 训练+协方差+RGDA/eval/retrieval 约 15 min。LoRA-NF seed42/43 预计还需 1–1.5 h 完成；随后 LoRA-only seed42/43 各需约 2.5 h，B0 约 0.5 h。全程可能持续到上午 08:00–09:00 CST。
 
 ### 关键观察
 
