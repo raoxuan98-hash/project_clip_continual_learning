@@ -43,7 +43,7 @@
 
 > **结论**：在新协议下，LoRA-NF（CD+NSP）以极微弱优势同时超过同管线复现的 LADA（T/A/L 分别 +0.01/+0.02/+0.05）。所有消融变体均不如完整 LoRA-NF，说明 NSP+CD 的组合是必要的。本表数字已通过 `scripts/aggregate_pa_results.py` 重新聚合验证。
 >
-> **W4 时间预期（2026-08-02 06:45 更新）**：full-shot 实际为 10 task。当前 seed42/43 均在进行 Task 6/10 协方差抽取，每 task（训练+协方差+RGDA/eval/retrieval）约 15–20 min。LoRA-NF 双种子预计还需约 1.5 h 完成；随后 supervisor 自动调度 LoRA-only seed42/43（各约 2.5 h），最后跑 B0（约 0.5 h）。全程可能持续到中午前后。LoRA-only 此前有一次早夭进程，日志无显式错误，将随 supervisor 自动重启。
+> **W4 时间预期（2026-08-02 06:55 更新）**：full-shot 实际为 10 task。**协方差抽取是瓶颈**，每 batch 约 15–18 s。当前 seed42 Task 6（food101）协方差 213/395（约 54%，剩余 ~47 min），seed43 Task 6 协方差 172/395（约 44%，剩余 ~1 h 8 min）。Task 6 单 task 协方差即需约 1.7–2 h，后续 Task 7–10 仍有 4 个 task（mnist/oxford_pets/stanford_cars/sun397，部分数据量更大）。按当前速度，**LoRA-NF 双种子可能还需 8–12 h 完成**，随后 LoRA-only seed42/43 各需类似时长（并行 2 GPU 约 8–12 h），最后 B0 约 0.5 h。**全程可能持续到深夜或次日清晨**。LoRA-only 此前有一次早夭进程，日志无显式错误，将随 supervisor 自动重启。
 
 ### 关键观察
 
