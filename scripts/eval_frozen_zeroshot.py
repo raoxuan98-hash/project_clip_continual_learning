@@ -11,6 +11,9 @@
         --root /data1/open_datasets/X-TAIL \
         --output experiments/paper_formal/WaveF_offline/frozen_zeroshot.json
 """
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 import json
 from pathlib import Path
@@ -35,6 +38,9 @@ def main():
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--output", type=Path,
                     default=Path("experiments/paper_formal/WaveF_offline/frozen_zeroshot.json"))
+    ap.add_argument("--resize-mode", default="legacy_square",
+                    choices=["legacy_square", "preserve_aspect"],
+                    help="评估图像预处理协议；preserve_aspect=短边等比缩放+center crop（新协议）")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -44,7 +50,7 @@ def main():
     results = {}
     for d_name in DATASETS:
         class_names = get_xtail_classnames(args.root, d_name, num_shots=16)
-        _, test_transform = get_transforms(d_name)
+        _, test_transform = get_transforms(d_name, test_resize_mode=args.resize_mode)
         _, _, te_loader, c_names = get_xtail_trainloader(
             root=args.root, dataset_name=d_name,
             transform_train=None, transform_test=test_transform,
@@ -53,8 +59,6 @@ def main():
         assert len(c_names) == len(class_names), (d_name, len(c_names), len(class_names))
         classifier = get_zeroshot_classifier(model, processor, class_names, device)
         features, labels = extract_features(model, te_loader, device, normalize=True)
-        features = features.to(device)
-        labels = labels.to(device)
         logits = features @ classifier
         pred = logits.argmax(dim=-1)
         acc = (pred == labels).float().mean().item() * 100.0
