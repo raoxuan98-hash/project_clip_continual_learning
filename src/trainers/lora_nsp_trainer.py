@@ -15,7 +15,6 @@ from src.models.backbone_utils import (
     embedding_dim,
     encode_image_features,
     encode_text_features,
-    is_siglip_family,
     tokenize_texts,
 )
 from src.models.utils import feature_distillation_loss, cross_modal_distillation_loss
@@ -64,6 +63,21 @@ class LoRANSPTrainer:
         self.has_vision_lora = hasattr(self.model.vision_model, 'lora_modules')
         self.has_text_lora = hasattr(self.model.text_model, 'lora_modules')
         self.has_text_adapter = self.has_text_lora or hasattr(self.model.text_model, 'adaptformer_modules')
+
+        # WiSE-FT：在 LoRA delta 为零（构建时）快照各 lora 模块的基座权重，
+        # 供 finalize_task_for_incremental 在 merge 后做 W <- W0 + λ(W - W0) 插值。
+        self._wiseft_base_weights = {}
+        if getattr(args, 'wiseft_lambda', 1.0) < 1.0:
+            for owner in ('vision_model', 'text_model'):
+                owner_mod = getattr(self.model, owner, None)
+                if owner_mod is None or not hasattr(owner_mod, 'lora_modules'):
+                    continue
+                for name, module in owner_mod.lora_modules.items():
+                    if hasattr(module, 'linear') and hasattr(module, 'B'):
+                        self._wiseft_base_weights[(owner, name)] = \
+                            module.linear.weight.detach().clone()
+            logging.info(f"WiSE-FT enabled (lambda={args.wiseft_lambda}): "
+                         f"snapshotted {len(self._wiseft_base_weights)} base weights.")
 
         # 预训练模型（用于蒸馏）
         self.model_pretrain, _ = get_clip_model(args, train_mode="frozen")
@@ -215,10 +229,7 @@ class LoRANSPTrainer:
         total_observations = 0
         for batch_data in tqdm(data_iter, desc=desc, leave=False):
             batch_input = batch_data[0] if isinstance(batch_data, (tuple, list)) else batch_data
-            if isinstance(batch_input, dict):
-                batch_input = {key: value.to(self.device) for key, value in batch_input.items()}
-            else:
-                batch_input = batch_input.to(self.device)
+            batch_input = batch_input.to(self.device)
             _ = forward_fn(batch_input)
 
             for gkey in groups:
@@ -279,20 +290,6 @@ class LoRANSPTrainer:
             all_texts.extend([template(classname_clean) for template in templates])
 
         batch_size = self.args.batch_size
-        if is_siglip_family(self.model):
-            # SigLIP 文本塔：固定 64 长度 tokenize（无 attention_mask 约定），
-            # 直接用完整 tokenizer 输出前向，协方差 hook 取 LoRA 模块输入。
-            text_batches = []
-            for i in range(0, len(all_texts), batch_size):
-                text_batches.append(self._tokenize_texts(all_texts[i:i + batch_size]))
-            return self._extract_covariances_from_modules(
-                lora_modules=self.model.text_model.lora_modules,
-                forward_fn=lambda text_inputs: self.model.text_model(
-                    **{key: value.to(self.device) for key, value in text_inputs.items()}),
-                data_iter=text_batches,
-                desc="Collecting text features",
-            )
-
         text_batches = []
         for i in range(0, len(all_texts), batch_size):
             batch_texts = all_texts[i:i + batch_size]
@@ -482,6 +479,16 @@ class LoRANSPTrainer:
 
         logging.info("Task finalized: LoRA weights merged and reset for enabled encoders.")
 
+        # WiSE-FT：merge 后把有效权重向预训练基座插值（λ=1 时 __init__ 未快照，跳过）。
+        wiseft_lambda = getattr(self.args, 'wiseft_lambda', 1.0)
+        if wiseft_lambda < 1.0 and self._wiseft_base_weights:
+            for (owner, name), base_w in self._wiseft_base_weights.items():
+                module = getattr(self.model, owner).lora_modules[name]
+                w = module.linear.weight
+                w.data.copy_(base_w + wiseft_lambda * (w.data - base_w))
+            logging.info(f"WiSE-FT interpolation (lambda={wiseft_lambda}) applied to "
+                         f"{len(self._wiseft_base_weights)} LoRA modules.")
+
     def train(self, train_loader, class_names, reference_loader,
               eval_interval=0, eval_callback=None, aux_weight=0.0,
               train_text_encoder=None, text_lr=None, iterations=None,
@@ -608,7 +615,7 @@ class LoRANSPTrainer:
                 # --- 前向传播 ---
                 vision_ctx = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
                 with vision_ctx:
-                    proj_feats = encode_image_features(self.model, images)
+                    proj_feats = self.model.get_image_features(images)
                 norm_feats = proj_feats / proj_feats.norm(dim=-1, keepdim=True)
 
                 # --- ZS 分类器 ---
@@ -700,7 +707,7 @@ class LoRANSPTrainer:
 
                     vision_ctx_ref = torch.no_grad() if not self.has_vision_lora else torch.enable_grad()
                     with vision_ctx_ref:
-                        s_img_f = encode_image_features(self.model, r_imgs)
+                        s_img_f = self.model.get_image_features(r_imgs)
                     s_img_f = s_img_f / s_img_f.norm(dim=-1, keepdim=True)
 
                     l_fd = feature_distillation_loss(t_img_f, s_img_f)
@@ -721,11 +728,9 @@ class LoRANSPTrainer:
 
                     cd_divergence = getattr(self.args, "cd_divergence", "kl_forward")
                     cd_temperature = getattr(self.args, "cd_temperature", 2.0)
-                    cd_direction = getattr(self.args, "cd_direction", "bidir")
                     l_cd = cross_modal_distillation_loss(
                         logit_scale, s_img_f, s_txt_f, t_img_f, t_txt_f,
-                        temperature=cd_temperature, divergence=cd_divergence,
-                        direction=cd_direction)
+                        temperature=cd_temperature, divergence=cd_divergence)
                     l_cd_val = l_cd.item()
 
                     loss = loss + self.args.fd_weight * l_fd + self.args.cd_weight * l_cd

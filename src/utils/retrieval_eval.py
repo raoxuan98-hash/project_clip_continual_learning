@@ -93,8 +93,11 @@ def parse_retrieval_roots(raw):
     return roots
 
 
-def _standard_transform(model_name=None):
-    _, transform_test = get_transforms("flickr8k", model_name=model_name)
+def _standard_transform():
+    import os
+    # 与主干模型匹配归一化统计量（SigLIP2 与 CLIP 的 mean/std 不同）
+    _, transform_test = get_transforms(
+        "flickr8k", model_name=os.environ.get("CLIP_MODEL_NAME"))
     return transform_test
 
 
@@ -105,12 +108,12 @@ def _apply_max_images(samples, prompts_list, max_images):
     return samples, prompts_list
 
 
-def load_retrieval_dataset(dataset_name, root, max_images=0, model_name=None):
+def load_retrieval_dataset(dataset_name, root, max_images=0):
     root = Path(root)
     if not root.exists():
         raise FileNotFoundError(f"Retrieval dataset root does not exist: {root}")
 
-    transform = _standard_transform(model_name=model_name)
+    transform = _standard_transform()
     if dataset_name == "flickr8k":
         dataset = Flickr8kDataset(str(root), transform=transform)
         if max_images and int(max_images) > 0:

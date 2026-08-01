@@ -1,54 +1,29 @@
 """Small compatibility layer for CLIP-family dual encoders.
 
-The formal CLIP experiments use ``CLIPModel``.  SigLIP 2 FixRes checkpoints
-use the same high-level dual-encoder API but expose pooled features instead of
-CLIP's separate ``visual_projection`` / ``text_projection`` modules.  Keeping
-that distinction here prevents model-family conditionals from leaking into the
-trainer, classifier, and retrieval evaluator.
+The formal CLIP experiments use ``CLIPModel``.  SigLIP 2 checkpoints use the
+same high-level dual-encoder API but do not expose CLIP's separate
+``text_projection`` module (``get_text_features`` already returns projected
+features).  Keeping that distinction here prevents model-family conditionals
+from leaking into the trainer, classifier, and retrieval evaluator.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from typing import Any, Iterable
 
 import torch
 
 
-SIGLIP2_PREFIX = "google/siglip2-"
-
-
 def is_siglip2_model_name(model_name: str | None) -> bool:
-    """Detect SigLIP 2 checkpoints from hub ids *or* local directory paths.
-
-    Hub ids carry the ``google/siglip2-`` prefix.  Local paths (the campaign
-    mounts weights at e.g. ``/mnt/raoxuan/models/siglip2-base-patch16-224``)
-    are detected by basename; as a final fallback the checkpoint's own
-    ``config.json`` ``model_type`` decides, so renamed directories still
-    resolve correctly.
-    """
-    if not model_name:
-        return False
-    name = str(model_name)
-    lowered = name.lower()
-    if lowered.startswith(SIGLIP2_PREFIX):
-        return True
-    if "siglip2" in os.path.basename(lowered.rstrip("/")):
-        return True
-    config_path = os.path.join(name, "config.json")
-    if os.path.isfile(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as fh:
-                model_type = str(json.load(fh).get("model_type", "")).lower()
-        except (OSError, ValueError):
-            return False
-        return model_type in {"siglip", "siglip2"}
-    return False
+    """Return True if the checkpoint name/path indicates SigLIP 2."""
+    return bool(model_name and "siglip2" in str(model_name).lower())
 
 
 def is_siglip_family(model: Any = None, model_name: str | None = None) -> bool:
+    """Return True if the checkpoint/backbone belongs to the SigLIP family."""
     if is_siglip2_model_name(model_name):
+        return True
+    if model_name is not None and "siglip" in str(model_name).lower():
         return True
     config = getattr(model, "config", None)
     if getattr(config, "model_type", None) in {"siglip", "siglip2"}:
@@ -59,9 +34,9 @@ def is_siglip_family(model: Any = None, model_name: str | None = None) -> bool:
 def text_tokenize_kwargs(model: Any = None, model_name: str | None = None) -> dict:
     """Return the checkpoint-compatible text preprocessing arguments.
 
-    SigLIP 2 FixRes was pretrained with fixed length-64 text sequences.  The
-    Hugging Face processor supplies lowercasing itself, while this function
-    keeps padding/truncation consistent across training and retrieval.
+    SigLIP 2 was pretrained with fixed length-64 text sequences.  The Hugging
+    Face processor supplies lowercasing itself, while this function keeps
+    padding/truncation consistent across training and retrieval.
     """
     if is_siglip_family(model=model, model_name=model_name):
         return {"padding": "max_length", "truncation": True, "max_length": 64}

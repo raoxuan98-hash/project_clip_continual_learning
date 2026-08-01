@@ -12,8 +12,20 @@ import torch
 from torch.utils.data import DataLoader
 
 # In[]
-def get_transforms(dataset_name, resolution=224, model_name=None):
-    """获取图像变换"""
+def get_transforms(dataset_name, resolution=224, model_name=None, test_resize_mode="legacy_square"):
+    """获取图像变换
+
+    ``legacy_square`` 复现本仓库历史 X-TAIL 协议：评估图像直接拉伸到 (H, W)。
+    ``preserve_aspect`` 遵循 OpenAI CLIP 标准评估流程：短边等比缩放到
+    ``resolution`` 再 center crop。该选项只影响确定性分类评估，不改变训练
+    增广或检索预处理。
+    """
+    valid_test_resize_modes = {"legacy_square", "preserve_aspect"}
+    if test_resize_mode not in valid_test_resize_modes:
+        raise ValueError(
+            f"Unsupported test_resize_mode={test_resize_mode!r}. "
+            f"Expected one of {sorted(valid_test_resize_modes)}."
+        )
     is_siglip2 = is_siglip2_model_name(model_name)
     mean = (0.5, 0.5, 0.5) if is_siglip2 else (0.48145466, 0.4578275, 0.40821073)
     std = (0.5, 0.5, 0.5) if is_siglip2 else (0.26862954, 0.26130258, 0.27577711)
@@ -38,8 +50,13 @@ def get_transforms(dataset_name, resolution=224, model_name=None):
             transforms.Normalize(mean, std),
         ])
 
+    test_resize = (
+        transforms.Resize((resolution, resolution), interpolation=transforms.InterpolationMode.BICUBIC)
+        if test_resize_mode == "legacy_square"
+        else transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BICUBIC)
+    )
     transform_test = transforms.Compose([
-        transforms.Resize((resolution, resolution), interpolation=transforms.InterpolationMode.BICUBIC),
+        test_resize,
         transforms.CenterCrop(resolution),
         transforms.Lambda(lambda image: image.convert("RGB")),
         transforms.ToTensor(),

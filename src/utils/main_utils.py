@@ -14,6 +14,7 @@ import random
 import numpy as np
 import torch
 import torch.nn.functional as F
+
 from src.models.backbone_utils import encode_text_features, tokenize_texts
 
 
@@ -116,7 +117,7 @@ def evaluate_dataset(args, d_name, model, zeroshot_classifier, lr_rgda_classifie
 
     if te_loader is None:
         batch_size = eval_batch_size if eval_batch_size is not None else args.batch_size
-        _, test_transform = get_transforms(d_name, model_name=getattr(args, "model_name", None))
+        _, test_transform = get_transforms(d_name)
         _, _, te_loader, c_names = get_xtail_trainloader(
             root=args.root, dataset_name=d_name,
             transform_train=None, transform_test=test_transform,
@@ -264,8 +265,7 @@ def batch_evaluate_datasets(
     offset = 0
 
     for d_name in dataset_names:
-        _, test_transform = get_transforms(
-            d_name, model_name=getattr(args, "model_name", None) if args is not None else None)
+        _, test_transform = get_transforms(d_name)
         _, _, te_loader, c_names = get_xtail_trainloader(
             root=root, dataset_name=d_name,
             transform_train=None, transform_test=test_transform,

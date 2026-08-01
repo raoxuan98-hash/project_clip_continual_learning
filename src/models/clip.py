@@ -6,14 +6,14 @@ from src.models.lora_sgp import (
 )
 from src.models.lora_baseline import VanillaLoRACLIPVisionTransformer, VanillaLoRACLIPTextTransformer
 from src.models.lada_text_adapter import LADAAdaptFormerCLIPTextTransformer
+from transformers import CLIPModel, CLIPProcessor, AutoModel, AutoProcessor
 from src.models.backbone_utils import (
     embedding_dim,
     encode_image_features,
     encode_text_features,
-    is_siglip2_model_name,
+    is_siglip_family,
     tokenize_texts,
 )
-from transformers import AutoModel, AutoProcessor, CLIPModel, CLIPProcessor
 import os
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -30,8 +30,9 @@ def get_clip_model(args, train_mode="lora"):
         "CLIP_MODEL_NAME", "openai/clip-vit-base-patch16")
     use_safetensors = _env_flag("CLIP_USE_SAFETENSORS", True)
     local_files_only = _env_flag("CLIP_LOCAL_FILES_ONLY", False)
-    model_cls = AutoModel if is_siglip2_model_name(model_name) else CLIPModel
-    processor_cls = AutoProcessor if is_siglip2_model_name(model_name) else CLIPProcessor
+    is_siglip = is_siglip_family(model_name=model_name)
+    model_cls = AutoModel if is_siglip else CLIPModel
+    processor_cls = AutoProcessor if is_siglip else CLIPProcessor
     model = model_cls.from_pretrained(
         model_name,
         use_safetensors=use_safetensors,
