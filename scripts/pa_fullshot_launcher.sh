@@ -24,24 +24,42 @@ QUEUE=(
 )
 
 # 只统计顶层主进程：DataLoader workers 继承父进程 cmdline，会被 pgrep 误匹配。
-# 通过 PPid 过滤，只保留 ppid 不在匹配进程列表中的顶层进程。
+# 先一次性快照所有匹配 PID，再用 PPid 过滤，避免 pgrep 两次调用之间进程变化导致误判。
+_PA_PID_FILE=$(mktemp)
+trap 'rm -f "$_PA_PID_FILE"' EXIT
+
+_pa_all_pids() {
+  pgrep -af "experiment_name PA__" | grep -v 'pgrep -af' | awk '{print $1}'
+}
+
 our_running() {
-  pgrep -af "experiment_name PA__" | grep -v 'pgrep -af' | awk '{print $1}' | while read pid; do
-    ppid=$(awk '/PPid:/{print $2}' /proc/$pid/status 2>/dev/null)
-    if ! pgrep -af "experiment_name PA__" | grep -v 'pgrep -af' | awk '{print $1}' | grep -q "^${ppid}$"; then
-      echo $pid
+  _pa_all_pids > "$_PA_PID_FILE"
+  local count=0
+  while read -r pid; do
+    [ -z "$pid" ] && continue
+    local ppid
+    ppid=$(awk '/PPid:/{print $2}' /proc/"$pid"/status 2>/dev/null)
+    if ! grep -qx "$ppid" "$_PA_PID_FILE"; then
+      count=$((count + 1))
     fi
-  done | wc -l
+  done < "$_PA_PID_FILE"
+  echo "$count"
 }
 
 is_running() {
   local name="$1"
-  pgrep -af "experiment_name ${name}" | grep -v 'pgrep -af' | awk '{print $1}' | while read pid; do
-    ppid=$(awk '/PPid:/{print $2}' /proc/$pid/status 2>/dev/null)
-    if ! pgrep -af "experiment_name ${name}" | grep -v 'pgrep -af' | awk '{print $1}' | grep -q "^${ppid}$"; then
-      echo $pid
+  _pa_all_pids > "$_PA_PID_FILE"
+  local pids_for_name
+  pids_for_name=$(pgrep -af "experiment_name ${name}" | grep -v 'pgrep -af' | awk '{print $1}')
+  [ -z "$pids_for_name" ] && return 1
+  for pid in $pids_for_name; do
+    local ppid
+    ppid=$(awk '/PPid:/{print $2}' /proc/"$pid"/status 2>/dev/null)
+    if ! grep -qx "$ppid" "$_PA_PID_FILE"; then
+      return 0
     fi
-  done | grep -q .
+  done
+  return 1
 }
 free_gpu() {
   local excl="${1:-}"
